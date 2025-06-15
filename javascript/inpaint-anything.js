@@ -117,6 +117,147 @@ async function inpaintAnything_sendToInpaint() {
     await updateGradioImage(document.querySelector("#img_inpaint_mask"), maskImgDataUrl, "mask.png");
 }
 
+async function inpaintAnything_sendToInpaintAnything(inputImgQuerySelector) {
+    const waitForElementToBeInDocument = (parent, selector) =>
+        Promise.race([inpaintAnything_waitForElement(parent, selector, true), inpaintAnything_timeout(10000)]);
+
+    const waitForElementToBeRemoved = (parent, selector) =>
+        Promise.race([inpaintAnything_waitForElement(parent, selector, false), inpaintAnything_timeout(10000)]);
+
+    const updateGradioImage = async (element, url, name) => {
+        const blob = await (await fetch(url)).blob();
+        const file = new File([blob], name, { type: "image/png" });
+        const dt = new DataTransfer();
+        dt.items.add(file);
+
+        function getClearButton() {
+            let clearButton = null;
+            let clearLabel = null;
+
+            let allButtons = element.querySelectorAll("button");
+            if (allButtons.length > 0) {
+                for (let button of allButtons) {
+                    let label = button.getAttribute("aria-label");
+                    if (label && !label.includes("Edit") && !label.includes("Éditer")) {
+                        clearButton = button;
+                        clearLabel = label;
+                        break;
+                    }
+                }
+            }
+            return [clearButton, clearLabel];
+        }
+
+        const [clearButton, clearLabel] = getClearButton();
+
+        if (clearButton) {
+            clearButton?.click();
+            await waitForElementToBeRemoved(element, `button[aria-label='${clearLabel}']`);
+        }
+
+        const input = element.querySelector("input[type='file']");
+        input.value = "";
+        input.files = dt.files;
+        input.dispatchEvent(
+            new Event("change", {
+                bubbles: true,
+                composed: true,
+            })
+        );
+        await waitForElementToBeInDocument(element, "button");
+    };
+
+    const inputImg = document.querySelector(inputImgQuerySelector);
+
+    if (!inputImg) {
+        return;
+    }
+
+    const inputImgDataUrl = inputImg.src;
+
+    window.scrollTo(0, 0);
+    switch_to_inpaint_anything();
+
+    await waitForElementToBeInDocument(document.querySelector("#tab_inpaint_anything"), "#ia_input_image");
+
+    await updateGradioImage(document.querySelector("#ia_input_image"), inputImgDataUrl, "input.png");
+}
+
+async function inpaintAnything_sendTxt2ImgToInpaintAnything() {
+    await inpaintAnything_sendToInpaintAnything("#txt2img_gallery img");
+}
+
+async function inpaintAnything_sendImg2ImgToInpaintAnything() {
+    await inpaintAnything_sendToInpaintAnything("#img2img_gallery img");
+}
+
+async function inpaintAnything_sendCleanerOutImageToInpaintAnything() {
+    const waitForElementToBeInDocument = (parent, selector) =>
+        Promise.race([inpaintAnything_waitForElement(parent, selector, true), inpaintAnything_timeout(10000)]);
+
+    const waitForElementToBeRemoved = (parent, selector) =>
+        Promise.race([inpaintAnything_waitForElement(parent, selector, false), inpaintAnything_timeout(10000)]);
+
+    const updateGradioImage = async (element, url, name) => {
+        const blob = await (await fetch(url)).blob();
+        const file = new File([blob], name, { type: "image/png" });
+        const dt = new DataTransfer();
+        dt.items.add(file);
+
+        function getClearButton() {
+            let clearButton = null;
+            let clearLabel = null;
+
+            let allButtons = element.querySelectorAll("button");
+            if (allButtons.length > 0) {
+                for (let button of allButtons) {
+                    let label = button.getAttribute("aria-label");
+                    if (label && !label.includes("Edit") && !label.includes("Éditer")) {
+                        clearButton = button;
+                        clearLabel = label;
+                        break;
+                    }
+                }
+            }
+            return [clearButton, clearLabel];
+        }
+
+        const [clearButton, clearLabel] = getClearButton();
+
+        if (clearButton) {
+            clearButton?.click();
+            await waitForElementToBeRemoved(element, `button[aria-label='${clearLabel}']`);
+        }
+
+        const input = element.querySelector("input[type='file']");
+        input.value = "";
+        input.files = dt.files;
+        input.dispatchEvent(
+            new Event("change", {
+                bubbles: true,
+                composed: true,
+            })
+        );
+        await waitForElementToBeInDocument(element, "button");
+    };
+
+    const inputImg = document.querySelector("#ia_cleaner_out_image img");
+
+    if (!inputImg) {
+        return;
+    }
+
+    const inputImgDataUrl = inputImg.src;
+
+    window.scrollTo(0, 0);
+    switch_to_inpaint_anything();
+
+    await waitForElementToBeInDocument(document.querySelector("#tab_inpaint_anything"), "#ia_input_image");
+
+    await updateGradioImage(document.querySelector("#ia_input_image"), inputImgDataUrl, "input.png");
+}
+
+    
 async function inpaintAnything_clearSamMask() {
     const waitForElementToBeInDocument = (parent, selector) =>
         Promise.race([inpaintAnything_waitForElement(parent, selector, true), inpaintAnything_timeout(1000)]);

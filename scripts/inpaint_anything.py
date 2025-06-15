@@ -24,6 +24,7 @@ from modules import devices, script_callbacks, shared
 from modules.processing import create_infotext, process_images
 from modules.sd_models import get_closet_checkpoint_match
 from modules.sd_samplers import samplers_for_img2img
+from modules.ui_components import ToolButton
 from PIL import Image, ImageFilter, ImageOps
 from PIL.PngImagePlugin import PngInfo
 from torch.hub import download_url_to_file
@@ -995,6 +996,15 @@ def on_ui_tabs():
                         else:
                             cleaner_out_image = gr.Gallery(label="Cleaned image", elem_id="ia_cleaner_out_image", show_label=False,
                                                            **out_gallery_kwargs)
+                    
+                    with gr.Row():
+                        inpaint_anything = ToolButton('🏁', elem_id=f'send_ia_cleaner_out_image_to_inpaint_anything', tooltip="Send image to Inpaint Anything tab.")
+                        inpaint_anything.click(
+                            fn=lambda: None,
+                            _js=f"inpaintAnything_sendCleanerOutImageToInpaintAnything",
+                            inputs=[],
+                            outputs=[],
+                        )
 
                 if webui_inpaint_enabled:
                     with gr.Tab("Inpainting webui", elem_id="webui_inpainting_tab"):
@@ -1172,15 +1182,15 @@ def on_ui_tabs():
 
                     with gr.Row():
                         with gr.Column():
-                            alpha_out_image = gr.Image(label="Alpha channel image", elem_id="alpha_out_image", type="pil", image_mode="RGBA", interactive=False)
-                        with gr.Column():
-                            mask_out_image = gr.Image(label="Mask image", elem_id="mask_out_image", type="numpy", interactive=False)
-
-                    with gr.Row():
-                        with gr.Column():
                             get_alpha_status_text = gr.Textbox(label="", elem_id="get_alpha_status_text", max_lines=1, show_label=False, interactive=False)
                         with gr.Column():
                             mask_send_to_inpaint_btn = gr.Button("Send to img2img inpaint", elem_id="mask_send_to_inpaint_btn")
+
+                    with gr.Row():
+                        with gr.Column():
+                            alpha_out_image = gr.Image(label="Alpha channel image", elem_id="alpha_out_image", type="pil", image_mode="RGBA", interactive=False)
+                        with gr.Column():
+                            mask_out_image = gr.Image(label="Mask image", elem_id="mask_out_image", type="numpy", interactive=False)
 
             with gr.Column():
                 with gr.Row():
@@ -1202,14 +1212,6 @@ def on_ui_tabs():
                             ignore_black_chk = gr.Checkbox(label="Ignore black area", elem_id="ignore_black_chk", value=True, show_label=True, interactive=True)
 
                 with gr.Row():
-                    if ia_check_versions.gradio_version_is_old:
-                        sel_mask = gr.Image(label="Selected mask image", elem_id="ia_sel_mask", type="numpy", tool="sketch", brush_radius=12,
-                                            show_label=False, interactive=True).style(height=480)
-                    else:
-                        sel_mask = gr.Image(label="Selected mask image", elem_id="ia_sel_mask", type="numpy", tool="sketch", brush_radius=12,
-                                            show_label=False, interactive=True, height=480)
-
-                with gr.Row():
                     with gr.Column():
                         expand_mask_btn = gr.Button("Expand mask region", elem_id="expand_mask_btn")
                         expand_mask_iteration_count = gr.Slider(label="Expand Mask Iterations",
@@ -1217,6 +1219,14 @@ def on_ui_tabs():
                     with gr.Column():
                         apply_mask_btn = gr.Button("Trim mask by sketch", elem_id="apply_mask_btn")
                         add_mask_btn = gr.Button("Add mask by sketch", elem_id="add_mask_btn")
+
+                with gr.Row():
+                    if ia_check_versions.gradio_version_is_old:
+                        sel_mask = gr.Image(label="Selected mask image", elem_id="ia_sel_mask", type="numpy", tool="sketch", brush_radius=12,
+                                            show_label=False, interactive=True).style(height=480)
+                    else:
+                        sel_mask = gr.Image(label="Selected mask image", elem_id="ia_sel_mask", type="numpy", tool="sketch", brush_radius=12,
+                                            show_label=False, interactive=True, height=480)
 
             load_model_btn.click(download_model, inputs=[sam_model_id], outputs=[status_text])
             input_image.upload(input_image_upload, inputs=[input_image, sam_image, sel_mask], outputs=[sam_image, sel_mask, sam_btn]).then(
