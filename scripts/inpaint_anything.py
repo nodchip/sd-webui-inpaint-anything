@@ -276,6 +276,31 @@ def expand_mask(input_image, sel_mask, expand_iteration=1):
 
 
 @clear_cache_decorator
+def erode_mask(input_image, sel_mask, erode_iteration=1):
+    global sam_dict
+    if sam_dict["mask_image"] is None or sel_mask is None:
+        return None
+
+    new_sel_mask = sam_dict["mask_image"]
+
+    erode_iteration = int(np.clip(erode_iteration, 1, 100))
+
+    new_sel_mask = cv2.erode(new_sel_mask, np.ones((3, 3), dtype=np.uint8), iterations=erode_iteration)
+
+    sam_dict["mask_image"] = new_sel_mask
+
+    if input_image is not None and input_image.shape == new_sel_mask.shape:
+        ret_image = cv2.addWeighted(input_image, 0.5, new_sel_mask, 0.5, 0)
+    else:
+        ret_image = new_sel_mask
+
+    if sel_mask["image"].shape == ret_image.shape and np.all(sel_mask["image"] == ret_image):
+        return gr.update()
+    else:
+        return gr.update(value=ret_image)
+
+
+@clear_cache_decorator
 def apply_mask(input_image, sel_mask):
     global sam_dict
     if sam_dict["mask_image"] is None or sel_mask is None:
@@ -1214,8 +1239,9 @@ def on_ui_tabs():
                 with gr.Row():
                     with gr.Column():
                         expand_mask_btn = gr.Button("Expand mask region", elem_id="expand_mask_btn")
-                        expand_mask_iteration_count = gr.Slider(label="Expand Mask Iterations",
-                                                                elem_id="expand_mask_iteration_count", minimum=1, maximum=100, value=1, step=1)
+                        erode_mask_btn = gr.Button("Erode mask region", elem_id="erode_mask_btn")
+                        expand_erode_mask_iteration_count = gr.Slider(label="Expand/Erode Mask Iterations",
+                                                                elem_id="expand_erode_mask_iteration_count", minimum=1, maximum=100, value=1, step=1)
                     with gr.Column():
                         apply_mask_btn = gr.Button("Trim mask by sketch", elem_id="apply_mask_btn")
                         add_mask_btn = gr.Button("Add mask by sketch", elem_id="add_mask_btn")
@@ -1237,7 +1263,9 @@ def on_ui_tabs():
                 fn=None, inputs=None, outputs=None, _js="inpaintAnything_clearSamMask")
             select_btn.click(select_mask, inputs=[input_image, sam_image, invert_chk, ignore_black_chk, sel_mask], outputs=[sel_mask]).then(
                 fn=None, inputs=None, outputs=None, _js="inpaintAnything_clearSelMask")
-            expand_mask_btn.click(expand_mask, inputs=[input_image, sel_mask, expand_mask_iteration_count], outputs=[sel_mask]).then(
+            expand_mask_btn.click(expand_mask, inputs=[input_image, sel_mask, expand_erode_mask_iteration_count], outputs=[sel_mask]).then(
+                fn=None, inputs=None, outputs=None, _js="inpaintAnything_clearSelMask")
+            erode_mask_btn.click(erode_mask, inputs=[input_image, sel_mask, expand_erode_mask_iteration_count], outputs=[sel_mask]).then(
                 fn=None, inputs=None, outputs=None, _js="inpaintAnything_clearSelMask")
             apply_mask_btn.click(apply_mask, inputs=[input_image, sel_mask], outputs=[sel_mask]).then(
                 fn=None, inputs=None, outputs=None, _js="inpaintAnything_clearSelMask")
