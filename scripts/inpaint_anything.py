@@ -1223,8 +1223,16 @@ def on_ui_tabs():
                                         if cn_ip_adapter:
                                             cn_ipa_or_ref = gr.Radio(label="IP-Adapter or Reference-Only", elem_id="cn_ipa_or_ref",
                                                                      choices=["IP-Adapter", "Reference-Only"], value="IP-Adapter", show_label=False)
-                                        cn_ref_image = gr.Image(label="Reference Image", elem_id="cn_ref_image", source="upload", type="numpy",
-                                                                interactive=True)
+                                        if ia_check_versions.gradio_version_is_old:
+                                            cn_ref_image = gr.Image(
+                                                label="Reference Image", elem_id="cn_ref_image", source="upload", type="numpy",
+                                                interactive=True
+                                            ).style(height=520)
+                                        else:
+                                            cn_ref_image = gr.Image(
+                                                label="Reference Image", elem_id="cn_ref_image", source="upload", type="numpy",
+                                                interactive=True, height=520
+                                            )
                                     with gr.Column():
                                         cn_ref_resize_mode = gr.Radio(label="Reference Image Resize Mode", elem_id="cn_ref_resize_mode",
                                                                       choices=["resize", "tile"], value="resize", show_label=True)
