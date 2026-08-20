@@ -22,6 +22,9 @@ required_packages = {
     "iopath": "iopath",
 }
 
+if sys.version_info >= (3, 13):
+    required_packages["imghdr"] = "standard-imghdr"
+
 for package, install_name in required_packages.items():
     try:
         __import__(package)

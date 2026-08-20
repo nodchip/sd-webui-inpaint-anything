@@ -561,10 +561,17 @@ def run_get_alpha_image(input_image, sel_mask):
         ia_logging.error("The sizes of the image and mask do not match")
         return None, ""
 
-    alpha_image = Image.fromarray(input_image).convert("RGBA")
-    mask_image = Image.fromarray(mask_image).convert("L")
+    rgba = Image.fromarray(input_image).convert("RGBA")
+    mask_l = Image.fromarray(mask_image).convert("L")
 
-    alpha_image.putalpha(mask_image)
+    rgba_np = np.array(rgba)
+    mask_np = np.array(mask_l)
+
+    outside = mask_np == 0
+    rgba_np[outside, 0:3] = 0
+    rgba_np[:, :, 3] = mask_np
+
+    alpha_image = Image.fromarray(rgba_np, mode="RGBA")
 
     save_name = "_".join([ia_file_manager.savename_prefix, "rgba_image"]) + ".png"
     save_name = os.path.join(ia_file_manager.outputs_dir, save_name)
@@ -1002,6 +1009,13 @@ def on_ui_tabs():
                         inpaint_anything.click(
                             fn=lambda: None,
                             _js=f"inpaintAnything_sendCleanerOutImageToInpaintAnything",
+                            inputs=[],
+                            outputs=[],
+                        )
+                        extras = ToolButton('📐', elem_id='send_ia_cleaner_out_image_to_extras', tooltip="Send image to Extras Single Image tab.")
+                        extras.click(
+                            fn=lambda: None,
+                            _js="inpaintAnything_sendCleanerOutImageToExtras",
                             inputs=[],
                             outputs=[],
                         )

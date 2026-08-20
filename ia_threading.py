@@ -5,8 +5,13 @@ from contextlib import ContextDecorator
 from functools import wraps
 
 import torch
-from modules import devices, safe, shared
-from modules.sd_models import load_model, reload_model_weights
+from modules import devices, safe, sd_models, shared
+
+try:
+    from modules.sd_models import load_model, reload_model_weights
+except ImportError:
+    load_model = None
+    reload_model_weights = None
 
 backup_sd_model, backup_device, backup_ckpt_info = None, None, None
 model_access_sem = threading.Semaphore(1)
@@ -18,11 +23,18 @@ def clear_cache():
 
 
 def is_sdxl_lowvram(sd_model):
-    return (shared.cmd_opts.lowvram or shared.cmd_opts.medvram or
+    return (getattr(shared.cmd_opts, "lowvram", False) or getattr(shared.cmd_opts, "medvram", False) or
             getattr(shared.cmd_opts, "medvram_sdxl", False) and hasattr(sd_model, "conditioner"))
 
 
 def webui_reload_model_weights(sd_model=None, info=None):
+    if reload_model_weights is None:
+        loading_parameters = dict(sd_models.model_data.forge_loading_parameters)
+        loading_parameters["checkpoint_info"] = info
+        sd_models.model_data.forge_loading_parameters = loading_parameters
+        sd_models.forge_model_reload()
+        return
+
     try:
         reload_model_weights(sd_model=sd_model, info=info)
     except Exception:
@@ -32,6 +44,13 @@ def webui_reload_model_weights(sd_model=None, info=None):
 def pre_offload_model_weights(sem):
     global backup_sd_model, backup_device, backup_ckpt_info
     with sem:
+        if reload_model_weights is None:
+            from backend import memory_management
+
+            memory_management.unload_all_models()
+            clear_cache()
+            return
+
         if (shared.sd_model is not None and not is_sdxl_lowvram(shared.sd_model) and
                 getattr(shared.sd_model, "device", devices.cpu) != devices.cpu):
             backup_sd_model = shared.sd_model

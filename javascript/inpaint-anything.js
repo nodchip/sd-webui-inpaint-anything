@@ -257,6 +257,66 @@ async function inpaintAnything_sendCleanerOutImageToInpaintAnything() {
     await updateGradioImage(document.querySelector("#ia_input_image"), inputImgDataUrl, "input.png");
 }
 
+async function inpaintAnything_sendCleanerOutImageToExtras() {
+    const waitForElementToBeInDocument = (parent, selector) =>
+        Promise.race([inpaintAnything_waitForElement(parent, selector, true), inpaintAnything_timeout(10000)]);
+
+    const waitForElementToBeRemoved = (parent, selector) =>
+        Promise.race([inpaintAnything_waitForElement(parent, selector, false), inpaintAnything_timeout(10000)]);
+
+    const updateGradioImage = async (element, url, name) => {
+        const blob = await (await fetch(url)).blob();
+        const file = new File([blob], name, { type: "image/png" });
+        const dt = new DataTransfer();
+        dt.items.add(file);
+
+        let clearButton = null;
+        let clearLabel = null;
+        for (const button of element.querySelectorAll("button")) {
+            const label = button.getAttribute("aria-label");
+            if (label && !label.includes("Edit") && !label.includes("Éditer")) {
+                clearButton = button;
+                clearLabel = label;
+                break;
+            }
+        }
+
+        if (clearButton) {
+            clearButton.click();
+            await waitForElementToBeRemoved(element, `button[aria-label='${clearLabel}']`);
+        }
+
+        const input = element.querySelector("input[type='file']");
+        input.value = "";
+        input.files = dt.files;
+        input.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
+        await waitForElementToBeInDocument(element, "button");
+    };
+
+    const inputImg = document.querySelector("#ia_cleaner_out_image img");
+    if (!inputImg) {
+        return;
+    }
+
+    const inputImgDataUrl = inputImg.src;
+
+    window.scrollTo(0, 0);
+    switch_to_extras();
+
+    const app = gradioApp();
+    const singleImageTabButton =
+        app.querySelector('button[aria-controls="extras_single_tab"]') ??
+        app.getElementById("extras_single_tab-button") ??
+        Array.from(app.querySelectorAll("#mode_extras button")).find(
+            (button) => button.textContent.trim() === "Single Image",
+        );
+    singleImageTabButton?.click();
+
+    const extrasImage = app.getElementById("extras_image");
+    await waitForElementToBeInDocument(extrasImage, "input[type='file']");
+    await updateGradioImage(extrasImage, inputImgDataUrl, "cleaner-output.png");
+}
+
     
 async function inpaintAnything_clearSamMask() {
     const waitForElementToBeInDocument = (parent, selector) =>
