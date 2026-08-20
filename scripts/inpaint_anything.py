@@ -1383,7 +1383,7 @@ def on_ui_tabs():
             add_event = add_mask_btn.click(add_mask, inputs=[input_image, sel_sketch], outputs=[sel_mask])
             if USE_FORGE_CANVAS:
                 sam_event.then(lambda: None, outputs=[sam_sketch])
-                select_event.then(lambda: (None, None), outputs=[sam_sketch, sel_sketch])
+                select_event.then(lambda: None, outputs=[sel_sketch])
                 expand_event.then(lambda: None, outputs=[sel_sketch])
                 apply_event.then(lambda: None, outputs=[sel_sketch])
                 add_event.then(lambda: None, outputs=[sel_sketch])
