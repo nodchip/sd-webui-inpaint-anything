@@ -48,6 +48,11 @@ from ia_webui_controlnet import (backup_alwayson_scripts, clear_controlnet_cache
 from lama_cleaner.model_manager import ModelManager
 from lama_cleaner.schema import Config, HDStrategy, LDMSampler, SDSampler
 
+try:
+    from modules_forge.forge_canvas.canvas import ForgeCanvas
+except ImportError:
+    ForgeCanvas = None
+
 
 @clear_cache_decorator
 def download_model(sam_model_id):
@@ -84,6 +89,76 @@ def download_model(sam_model_id):
 
 
 sam_dict = dict(sam_masks=None, mask_image=None, cnet=None, orig_image=None, pad_mask=None)
+GRADIO_V4_OR_LATER = int(gr.__version__.split(".", 1)[0]) >= 4
+USE_FORGE_CANVAS = GRADIO_V4_OR_LATER and ForgeCanvas is not None
+
+
+def get_sketch_image(sketch):
+    """Return the background image from Gradio 3 sketch or Gradio 4 ImageEditor data."""
+    if isinstance(sketch, np.ndarray):
+        if sketch.ndim == 3 and sketch.shape[2] == 4:
+            return sketch[:, :, :3]
+        return sketch
+    if not isinstance(sketch, dict):
+        return None
+    if "image" in sketch:
+        image = sketch["image"]
+    else:
+        background = sketch.get("background")
+        image = background if background is not None else sketch.get("composite")
+    if isinstance(image, np.ndarray) and image.ndim == 3 and image.shape[2] == 4:
+        return image[:, :, :3]
+    return image
+
+
+def get_sketch_mask(sketch):
+    """Return a three-channel uint8 drawing mask from either Gradio representation."""
+    if isinstance(sketch, np.ndarray):
+        if sketch.ndim == 2:
+            mask = sketch
+        elif sketch.shape[2] >= 4:
+            mask = sketch[:, :, 3]
+        else:
+            mask = np.any(sketch[:, :, :3] != 0, axis=2).astype(np.uint8) * 255
+        return np.repeat(mask.astype(np.uint8)[:, :, np.newaxis], 3, axis=2)
+    if not isinstance(sketch, dict):
+        return None
+    if "mask" in sketch:
+        return sketch["mask"]
+
+    background = get_sketch_image(sketch)
+    if background is None:
+        return None
+
+    height, width = np.asarray(background).shape[:2]
+    mask = np.zeros((height, width), dtype=np.uint8)
+    for layer in sketch.get("layers") or []:
+        layer = np.asarray(layer)
+        if layer.shape[:2] != (height, width):
+            continue
+        if layer.ndim == 2:
+            layer_mask = layer
+        elif layer.shape[2] >= 4:
+            layer_mask = layer[:, :, 3]
+        else:
+            layer_mask = np.any(layer[:, :, :3] != 0, axis=2).astype(np.uint8) * 255
+        mask = np.maximum(mask, layer_mask.astype(np.uint8))
+
+    if not np.any(mask):
+        composite = sketch.get("composite")
+        if composite is not None:
+            background_rgb = np.asarray(background)[:, :, :3]
+            composite_rgb = np.asarray(composite)[:, :, :3]
+            if composite_rgb.shape == background_rgb.shape:
+                mask = np.any(composite_rgb != background_rgb, axis=2).astype(np.uint8) * 255
+
+    return np.repeat(mask[:, :, np.newaxis], 3, axis=2)
+
+
+def sketch_image_matches(sketch, image):
+    sketch_image = get_sketch_image(sketch)
+    return (isinstance(sketch_image, np.ndarray) and sketch_image.shape == image.shape and
+            np.all(sketch_image == image))
 
 
 def save_mask_image(mask_image, save_mask_chk=False):
@@ -114,18 +189,18 @@ def input_image_upload(input_image, sam_image, sel_mask):
 
     ret_sel_image = cv2.addWeighted(input_image, 0.5, sam_dict["mask_image"], 0.5, 0)
 
-    if sam_image is None or not isinstance(sam_image, dict) or "image" not in sam_image:
+    if get_sketch_image(sam_image) is None:
         sam_dict["sam_masks"] = None
         ret_sam_image = np.zeros_like(input_image, dtype=np.uint8)
-    elif sam_image["image"].shape == input_image.shape:
+    elif get_sketch_image(sam_image).shape == input_image.shape:
         ret_sam_image = gr.update()
     else:
         sam_dict["sam_masks"] = None
         ret_sam_image = gr.update(value=np.zeros_like(input_image, dtype=np.uint8))
 
-    if sel_mask is None or not isinstance(sel_mask, dict) or "image" not in sel_mask:
+    if get_sketch_image(sel_mask) is None:
         ret_sel_mask = ret_sel_image
-    elif sel_mask["image"].shape == ret_sel_image.shape and np.all(sel_mask["image"] == ret_sel_image):
+    elif sketch_image_matches(sel_mask, ret_sel_image):
         ret_sel_mask = gr.update()
     else:
         ret_sel_mask = gr.update(value=ret_sel_image)
@@ -203,10 +278,10 @@ def run_sam(input_image, sam_model_id, sam_image, anime_style_chk=False):
         ret_sam_image = None if sam_image is None else gr.update()
         return ret_sam_image, "Segment Anything failed"
 
-    if sam_image is None or not isinstance(sam_image, dict) or "image" not in sam_image:
+    if get_sketch_image(sam_image) is None:
         return seg_image, "Segment Anything complete"
     else:
-        if sam_image["image"].shape == seg_image.shape and np.all(sam_image["image"] == seg_image):
+        if sketch_image_matches(sam_image, seg_image):
             return gr.update(), "Segment Anything complete"
         else:
             return gr.update(value=seg_image), "Segment Anything complete"
@@ -220,8 +295,11 @@ def select_mask(input_image, sam_image, invert_chk, ignore_black_chk, sel_mask):
         return ret_sel_mask
     sam_masks = sam_dict["sam_masks"]
 
-    # image = sam_image["image"]
-    mask = sam_image["mask"][:, :, 0:1]
+    mask = get_sketch_mask(sam_image)
+    if mask is None:
+        ret_sel_mask = None if sel_mask is None else gr.update()
+        return ret_sel_mask
+    mask = mask[:, :, 0:1]
 
     try:
         seg_image = inpalib.create_mask_image(mask, sam_masks, ignore_black_chk)
@@ -241,10 +319,10 @@ def select_mask(input_image, sam_image, invert_chk, ignore_black_chk, sel_mask):
     else:
         ret_image = seg_image
 
-    if sel_mask is None or not isinstance(sel_mask, dict) or "image" not in sel_mask:
+    if get_sketch_image(sel_mask) is None:
         return ret_image
     else:
-        if sel_mask["image"].shape == ret_image.shape and np.all(sel_mask["image"] == ret_image):
+        if sketch_image_matches(sel_mask, ret_image):
             return gr.update()
         else:
             return gr.update(value=ret_image)
@@ -269,7 +347,7 @@ def expand_mask(input_image, sel_mask, expand_iteration=1):
     else:
         ret_image = new_sel_mask
 
-    if sel_mask["image"].shape == ret_image.shape and np.all(sel_mask["image"] == ret_image):
+    if sketch_image_matches(sel_mask, ret_image):
         return gr.update()
     else:
         return gr.update(value=ret_image)
@@ -282,7 +360,10 @@ def apply_mask(input_image, sel_mask):
         return None
 
     sel_mask_image = sam_dict["mask_image"]
-    sel_mask_mask = np.logical_not(sel_mask["mask"][:, :, 0:3].astype(bool)).astype(np.uint8)
+    sketch_mask = get_sketch_mask(sel_mask)
+    if sketch_mask is None:
+        return gr.update()
+    sel_mask_mask = np.logical_not(sketch_mask[:, :, 0:3].astype(bool)).astype(np.uint8)
     new_sel_mask = sel_mask_image * sel_mask_mask
 
     sam_dict["mask_image"] = new_sel_mask
@@ -292,7 +373,7 @@ def apply_mask(input_image, sel_mask):
     else:
         ret_image = new_sel_mask
 
-    if sel_mask["image"].shape == ret_image.shape and np.all(sel_mask["image"] == ret_image):
+    if sketch_image_matches(sel_mask, ret_image):
         return gr.update()
     else:
         return gr.update(value=ret_image)
@@ -305,7 +386,10 @@ def add_mask(input_image, sel_mask):
         return None
 
     sel_mask_image = sam_dict["mask_image"]
-    sel_mask_mask = sel_mask["mask"][:, :, 0:3].astype(bool).astype(np.uint8)
+    sketch_mask = get_sketch_mask(sel_mask)
+    if sketch_mask is None:
+        return gr.update()
+    sel_mask_mask = sketch_mask[:, :, 0:3].astype(bool).astype(np.uint8)
     new_sel_mask = sel_mask_image + (sel_mask_mask * np.invert(sel_mask_image, dtype=np.uint8))
 
     sam_dict["mask_image"] = new_sel_mask
@@ -315,7 +399,7 @@ def add_mask(input_image, sel_mask):
     else:
         ret_image = new_sel_mask
 
-    if sel_mask["image"].shape == ret_image.shape and np.all(sel_mask["image"] == ret_image):
+    if sketch_image_matches(sel_mask, ret_image):
         return gr.update()
     else:
         return gr.update(value=ret_image)
@@ -1208,14 +1292,33 @@ def on_ui_tabs():
 
             with gr.Column():
                 with gr.Row():
-                    gr.Markdown("Mouse over image: Press `S` key for Fullscreen mode, `R` key to Reset zoom")
+                    gr.Markdown("Mouse over image: Press `S` for Fullscreen, `R` to fit the whole image. Adjust Brush Width in the top-right toolbar.")
                 with gr.Row():
-                    if ia_check_versions.gradio_version_is_old:
+                    if USE_FORGE_CANVAS:
+                        sam_canvas = ForgeCanvas(
+                            no_upload=True, height=480, numpy=True, elem_id="ia_sam_image",
+                            scribble_color="#ffffff", scribble_color_fixed=True,
+                            scribble_width=2, scribble_width_fixed=False,
+                            scribble_alpha=100, scribble_alpha_fixed=True,
+                            scribble_softness=0, scribble_softness_fixed=True)
+                        sam_image = sam_canvas.background
+                        sam_sketch = sam_canvas.foreground
+                    elif GRADIO_V4_OR_LATER:
+                        sam_image = gr.ImageMask(
+                            label="Segment Anything image", elem_id="ia_sam_image", type="numpy",
+                            image_mode="RGBA", sources=(), transforms=(),
+                            brush=gr.Brush(default_size=8, colors=["#ffffff"], default_color="#ffffff", color_mode="fixed"),
+                            eraser=gr.Eraser(default_size=8), show_label=False, show_download_button=False,
+                            interactive=True, height=480)
+                        sam_sketch = sam_image
+                    elif ia_check_versions.gradio_version_is_old:
                         sam_image = gr.Image(label="Segment Anything image", elem_id="ia_sam_image", type="numpy", tool="sketch", brush_radius=8,
                                              show_label=False, interactive=True).style(height=480)
+                        sam_sketch = sam_image
                     else:
                         sam_image = gr.Image(label="Segment Anything image", elem_id="ia_sam_image", type="numpy", tool="sketch", brush_radius=8,
                                              show_label=False, interactive=True, height=480)
+                        sam_sketch = sam_image
 
                 with gr.Row():
                     with gr.Column():
@@ -1235,28 +1338,61 @@ def on_ui_tabs():
                         add_mask_btn = gr.Button("Add mask by sketch", elem_id="add_mask_btn")
 
                 with gr.Row():
-                    if ia_check_versions.gradio_version_is_old:
+                    if USE_FORGE_CANVAS:
+                        sel_canvas = ForgeCanvas(
+                            no_upload=True, height=480, numpy=True, elem_id="ia_sel_mask",
+                            scribble_color="#ffffff", scribble_color_fixed=True,
+                            scribble_width=3, scribble_width_fixed=False,
+                            scribble_alpha=100, scribble_alpha_fixed=True,
+                            scribble_softness=0, scribble_softness_fixed=True)
+                        sel_mask = sel_canvas.background
+                        sel_sketch = sel_canvas.foreground
+                    elif GRADIO_V4_OR_LATER:
+                        sel_mask = gr.ImageMask(
+                            label="Selected mask image", elem_id="ia_sel_mask", type="numpy",
+                            image_mode="RGBA", sources=(), transforms=(),
+                            brush=gr.Brush(default_size=12, colors=["#ffffff"], default_color="#ffffff", color_mode="fixed"),
+                            eraser=gr.Eraser(default_size=12), show_label=False, show_download_button=False,
+                            interactive=True, height=480)
+                        sel_sketch = sel_mask
+                    elif ia_check_versions.gradio_version_is_old:
                         sel_mask = gr.Image(label="Selected mask image", elem_id="ia_sel_mask", type="numpy", tool="sketch", brush_radius=12,
                                             show_label=False, interactive=True).style(height=480)
+                        sel_sketch = sel_mask
                     else:
                         sel_mask = gr.Image(label="Selected mask image", elem_id="ia_sel_mask", type="numpy", tool="sketch", brush_radius=12,
                                             show_label=False, interactive=True, height=480)
+                        sel_sketch = sel_mask
 
             load_model_btn.click(download_model, inputs=[sam_model_id], outputs=[status_text])
-            input_image.upload(input_image_upload, inputs=[input_image, sam_image, sel_mask], outputs=[sam_image, sel_mask, sam_btn]).then(
-                fn=None, inputs=None, outputs=None, _js="inpaintAnything_initSamSelMask")
+            input_upload_event = input_image.upload(
+                input_image_upload, inputs=[input_image, sam_image, sel_mask], outputs=[sam_image, sel_mask, sam_btn])
+            if USE_FORGE_CANVAS:
+                input_upload_event.then(lambda: (None, None), outputs=[sam_sketch, sel_sketch])
+            elif not GRADIO_V4_OR_LATER:
+                input_upload_event.then(fn=None, inputs=None, outputs=None, _js="inpaintAnything_initSamSelMask")
             padding_btn.click(run_padding, inputs=[input_image, pad_scale_width, pad_scale_height, pad_lr_barance, pad_tb_barance, padding_mode],
                               outputs=[input_image, status_text])
-            sam_btn.click(run_sam, inputs=[input_image, sam_model_id, sam_image, anime_style_chk], outputs=[sam_image, status_text]).then(
-                fn=None, inputs=None, outputs=None, _js="inpaintAnything_clearSamMask")
-            select_btn.click(select_mask, inputs=[input_image, sam_image, invert_chk, ignore_black_chk, sel_mask], outputs=[sel_mask]).then(
-                fn=None, inputs=None, outputs=None, _js="inpaintAnything_clearSelMask")
-            expand_mask_btn.click(expand_mask, inputs=[input_image, sel_mask, expand_mask_iteration_count], outputs=[sel_mask]).then(
-                fn=None, inputs=None, outputs=None, _js="inpaintAnything_clearSelMask")
-            apply_mask_btn.click(apply_mask, inputs=[input_image, sel_mask], outputs=[sel_mask]).then(
-                fn=None, inputs=None, outputs=None, _js="inpaintAnything_clearSelMask")
-            add_mask_btn.click(add_mask, inputs=[input_image, sel_mask], outputs=[sel_mask]).then(
-                fn=None, inputs=None, outputs=None, _js="inpaintAnything_clearSelMask")
+            sam_event = sam_btn.click(
+                run_sam, inputs=[input_image, sam_model_id, sam_image, anime_style_chk], outputs=[sam_image, status_text])
+            select_event = select_btn.click(
+                select_mask, inputs=[input_image, sam_sketch, invert_chk, ignore_black_chk, sel_mask], outputs=[sel_mask])
+            expand_event = expand_mask_btn.click(
+                expand_mask, inputs=[input_image, sel_mask, expand_mask_iteration_count], outputs=[sel_mask])
+            apply_event = apply_mask_btn.click(apply_mask, inputs=[input_image, sel_sketch], outputs=[sel_mask])
+            add_event = add_mask_btn.click(add_mask, inputs=[input_image, sel_sketch], outputs=[sel_mask])
+            if USE_FORGE_CANVAS:
+                sam_event.then(lambda: None, outputs=[sam_sketch])
+                select_event.then(lambda: (None, None), outputs=[sam_sketch, sel_sketch])
+                expand_event.then(lambda: None, outputs=[sel_sketch])
+                apply_event.then(lambda: None, outputs=[sel_sketch])
+                add_event.then(lambda: None, outputs=[sel_sketch])
+            elif not GRADIO_V4_OR_LATER:
+                sam_event.then(fn=None, inputs=None, outputs=None, _js="inpaintAnything_clearSamMask")
+                select_event.then(fn=None, inputs=None, outputs=None, _js="inpaintAnything_clearSelMask")
+                expand_event.then(fn=None, inputs=None, outputs=None, _js="inpaintAnything_clearSelMask")
+                apply_event.then(fn=None, inputs=None, outputs=None, _js="inpaintAnything_clearSelMask")
+                add_event.then(fn=None, inputs=None, outputs=None, _js="inpaintAnything_clearSelMask")
             get_txt2img_prompt_btn.click(
                 fn=None, inputs=None, outputs=None, _js="inpaintAnything_getTxt2imgPrompt")
             get_img2img_prompt_btn.click(

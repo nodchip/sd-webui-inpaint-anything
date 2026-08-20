@@ -730,8 +730,41 @@ onUiLoaded(async () => {
         targetElement.addEventListener("mouseleave", handleMouseLeave);
     }
 
-    applyZoomAndPan(elementIDs.ia_sam_image);
-    applyZoomAndPan(elementIDs.ia_sel_mask);
+    function configureForgeCanvas(elemId) {
+        const root = gradioApp().querySelector(elemId);
+        const container = root?.querySelector(".forge-container");
+        if (!container) return false;
+
+        const toolbar = container.querySelector(".forge-toolbar, .forge-toolbar-static");
+        if (toolbar) {
+            toolbar.style.left = "auto";
+            toolbar.style.right = "0";
+        }
+        const maxButton = container.querySelector('[id^="maxButton_"]');
+        const minButton = container.querySelector('[id^="minButton_"]');
+        if (maxButton) maxButton.title = "Maximize [S]";
+        if (minButton) minButton.title = "Minimize [S]";
+
+        document.addEventListener(
+            "keydown",
+            (event) => {
+                if (event.code !== defaultHotkeysConfig.canvas_hotkey_fullscreen || event.repeat || !root.matches(":hover")) {
+                    return;
+                }
+                if (event.target.nodeName === "TEXTAREA" || event.target.nodeName === "INPUT") return;
+
+                event.preventDefault();
+                event.stopImmediatePropagation();
+                if (maxButton && maxButton.style.display !== "none") maxButton.click();
+                else minButton?.click();
+            },
+            true,
+        );
+        return true;
+    }
+
+    if (!configureForgeCanvas(elementIDs.ia_sam_image)) applyZoomAndPan(elementIDs.ia_sam_image);
+    if (!configureForgeCanvas(elementIDs.ia_sel_mask)) applyZoomAndPan(elementIDs.ia_sel_mask);
     // applyZoomAndPan(elementIDs.ia_out_image);
     // applyZoomAndPan(elementIDs.ia_cleaner_out_image);
     // applyZoomAndPan(elementIDs.ia_webui_out_image);
