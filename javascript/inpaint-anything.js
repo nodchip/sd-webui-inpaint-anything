@@ -317,7 +317,73 @@ async function inpaintAnything_sendCleanerOutImageToExtras() {
     await updateGradioImage(extrasImage, inputImgDataUrl, "cleaner-output.png");
 }
 
-    
+function inpaintAnything_setForgeCanvasProgress(elemId, active, message = "") {
+    const root = gradioApp().querySelector(`#${elemId}`);
+    const container = root?.querySelector(".forge-image-container");
+    if (!container) return;
+
+    let overlay = container.querySelector(".ia-forge-canvas-progress");
+    if (!overlay) {
+        overlay = document.createElement("div");
+        overlay.className = "ia-forge-canvas-progress";
+        overlay.hidden = true;
+        overlay.setAttribute("role", "status");
+        overlay.setAttribute("aria-live", "polite");
+
+        const spinner = document.createElement("span");
+        spinner.className = "ia-forge-canvas-progress-spinner";
+        spinner.setAttribute("aria-hidden", "true");
+
+        const label = document.createElement("span");
+        label.className = "ia-forge-canvas-progress-label";
+
+        overlay.append(spinner, label);
+        container.appendChild(overlay);
+    }
+
+    const pending = Number.parseInt(overlay.dataset.pending || "0", 10) || 0;
+    const nextPending = active ? pending + 1 : Math.max(0, pending - 1);
+    overlay.dataset.pending = String(nextPending);
+    if (message) overlay.querySelector(".ia-forge-canvas-progress-label").textContent = message;
+    overlay.hidden = nextPending === 0;
+    container.setAttribute("aria-busy", nextPending > 0 ? "true" : "false");
+}
+
+function inpaintAnything_startSamProgress(inputImage, modelId, samImage, animeStyle) {
+    inpaintAnything_setForgeCanvasProgress("ia_sam_image", true, "Running Segment Anything...");
+    return [inputImage, modelId, samImage, animeStyle];
+}
+
+function inpaintAnything_startCreateMaskProgress(inputImage, samSketch, invertMask, ignoreBlack, selectedMask) {
+    inpaintAnything_setForgeCanvasProgress("ia_sel_mask", true, "Creating mask...");
+    return [inputImage, samSketch, invertMask, ignoreBlack, selectedMask];
+}
+
+function inpaintAnything_startExpandMaskProgress(inputImage, selectedMask, iterations) {
+    inpaintAnything_setForgeCanvasProgress("ia_sel_mask", true, "Expanding mask...");
+    return [inputImage, selectedMask, iterations];
+}
+
+function inpaintAnything_startApplyMaskProgress(inputImage, selectedSketch) {
+    inpaintAnything_setForgeCanvasProgress("ia_sel_mask", true, "Trimming mask...");
+    return [inputImage, selectedSketch];
+}
+
+function inpaintAnything_startAddMaskProgress(inputImage, selectedSketch) {
+    inpaintAnything_setForgeCanvasProgress("ia_sel_mask", true, "Adding mask...");
+    return [inputImage, selectedSketch];
+}
+
+function inpaintAnything_finishSamProgress() {
+    inpaintAnything_setForgeCanvasProgress("ia_sam_image", false);
+    return [];
+}
+
+function inpaintAnything_finishMaskProgress() {
+    inpaintAnything_setForgeCanvasProgress("ia_sel_mask", false);
+    return [];
+}
+
 async function inpaintAnything_clearSamMask() {
     const waitForElementToBeInDocument = (parent, selector) =>
         Promise.race([inpaintAnything_waitForElement(parent, selector, true), inpaintAnything_timeout(1000)]);

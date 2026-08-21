@@ -1389,20 +1389,41 @@ def on_ui_tabs():
                 input_upload_event.then(fn=None, inputs=None, outputs=None, _js="inpaintAnything_initSamSelMask")
             padding_btn.click(run_padding, inputs=[input_image, pad_scale_width, pad_scale_height, pad_lr_barance, pad_tb_barance, padding_mode],
                               outputs=[input_image, status_text])
-            sam_event = sam_btn.click(
-                run_sam, inputs=[input_image, sam_model_id, sam_image, anime_style_chk], outputs=[sam_image, status_text])
-            select_event = select_btn.click(
-                select_mask, inputs=[input_image, sam_sketch, invert_chk, ignore_black_chk, sel_mask], outputs=[sel_mask])
-            expand_event = expand_mask_btn.click(
-                expand_mask, inputs=[input_image, sel_mask, expand_mask_iteration_count], outputs=[sel_mask])
-            apply_event = apply_mask_btn.click(apply_mask, inputs=[input_image, sel_sketch], outputs=[sel_mask])
-            add_event = add_mask_btn.click(add_mask, inputs=[input_image, sel_sketch], outputs=[sel_mask])
+            sam_progress_kwargs = {}
+            select_progress_kwargs = {}
+            expand_progress_kwargs = {}
+            apply_progress_kwargs = {}
+            add_progress_kwargs = {}
             if USE_FORGE_CANVAS:
-                sam_event.then(lambda: None, outputs=[sam_sketch])
-                select_event.then(lambda: None, outputs=[sel_sketch])
-                expand_event.then(lambda: None, outputs=[sel_sketch])
-                apply_event.then(lambda: None, outputs=[sel_sketch])
-                add_event.then(lambda: None, outputs=[sel_sketch])
+                sam_progress_kwargs = {"show_progress": "hidden", "_js": "inpaintAnything_startSamProgress"}
+                select_progress_kwargs = {"show_progress": "hidden", "_js": "inpaintAnything_startCreateMaskProgress"}
+                expand_progress_kwargs = {"show_progress": "hidden", "_js": "inpaintAnything_startExpandMaskProgress"}
+                apply_progress_kwargs = {"show_progress": "hidden", "_js": "inpaintAnything_startApplyMaskProgress"}
+                add_progress_kwargs = {"show_progress": "hidden", "_js": "inpaintAnything_startAddMaskProgress"}
+            sam_event = sam_btn.click(
+                run_sam, inputs=[input_image, sam_model_id, sam_image, anime_style_chk], outputs=[sam_image, status_text],
+                **sam_progress_kwargs)
+            select_event = select_btn.click(
+                select_mask, inputs=[input_image, sam_sketch, invert_chk, ignore_black_chk, sel_mask], outputs=[sel_mask],
+                **select_progress_kwargs)
+            expand_event = expand_mask_btn.click(
+                expand_mask, inputs=[input_image, sel_mask, expand_mask_iteration_count], outputs=[sel_mask],
+                **expand_progress_kwargs)
+            apply_event = apply_mask_btn.click(
+                apply_mask, inputs=[input_image, sel_sketch], outputs=[sel_mask], **apply_progress_kwargs)
+            add_event = add_mask_btn.click(
+                add_mask, inputs=[input_image, sel_sketch], outputs=[sel_mask], **add_progress_kwargs)
+            if USE_FORGE_CANVAS:
+                sam_event.then(
+                    lambda: None, outputs=[sam_sketch], show_progress="hidden", _js="inpaintAnything_finishSamProgress")
+                select_event.then(
+                    lambda: None, outputs=[sel_sketch], show_progress="hidden", _js="inpaintAnything_finishMaskProgress")
+                expand_event.then(
+                    lambda: None, outputs=[sel_sketch], show_progress="hidden", _js="inpaintAnything_finishMaskProgress")
+                apply_event.then(
+                    lambda: None, outputs=[sel_sketch], show_progress="hidden", _js="inpaintAnything_finishMaskProgress")
+                add_event.then(
+                    lambda: None, outputs=[sel_sketch], show_progress="hidden", _js="inpaintAnything_finishMaskProgress")
             elif not GRADIO_V4_OR_LATER:
                 sam_event.then(fn=None, inputs=None, outputs=None, _js="inpaintAnything_clearSamMask")
                 select_event.then(fn=None, inputs=None, outputs=None, _js="inpaintAnything_clearSelMask")
