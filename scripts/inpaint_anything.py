@@ -1308,7 +1308,10 @@ def on_ui_tabs():
 
             with gr.Column():
                 with gr.Row():
-                    gr.Markdown("Mouse over image: Press `S` for Fullscreen, `R` to fit the whole image. Adjust Brush Width in the top-right toolbar.")
+                    gr.Markdown(
+                        "Mouse over image: Press `S` for Fullscreen, `R` to fit the whole image. "
+                        "Hold `Ctrl` while using the mouse wheel to zoom. Adjust Brush Width in the top-right toolbar."
+                    )
                 with gr.Row():
                     if USE_FORGE_CANVAS:
                         sam_canvas = ForgeCanvas(
