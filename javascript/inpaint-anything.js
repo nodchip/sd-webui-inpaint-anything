@@ -191,6 +191,15 @@ async function inpaintAnything_sendImg2ImgToInpaintAnything() {
     await inpaintAnything_sendToInpaintAnything("#img2img_gallery img");
 }
 
+async function inpaintAnything_sendExtrasToInpaintAnything() {
+    const selector = [
+        "#extras_gallery .thumbnail-item.selected img",
+        "#extras_gallery .preview img",
+        "#extras_gallery img",
+    ].find((candidate) => document.querySelector(candidate));
+    if (selector) await inpaintAnything_sendToInpaintAnything(selector);
+}
+
 async function inpaintAnything_sendCleanerOutImageToInpaintAnything() {
     const waitForElementToBeInDocument = (parent, selector) =>
         Promise.race([inpaintAnything_waitForElement(parent, selector, true), inpaintAnything_timeout(10000)]);

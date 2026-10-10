@@ -178,34 +178,27 @@ def save_mask_image(mask_image, save_mask_chk=False):
 
 
 @clear_cache_decorator
-def input_image_upload(input_image, sam_image, sel_mask):
+def input_image_upload(input_image, sam_image):
     global sam_dict
+
+    sam_preview = get_sketch_image(sam_image)
+    keep_sam_masks = (sam_dict["sam_masks"] is not None and
+                      isinstance(sam_preview, np.ndarray) and
+                      sam_preview.shape[:2] == input_image.shape[:2] and
+                      all(mask["segmentation"].shape == input_image.shape[:2]
+                          for mask in sam_dict["sam_masks"]))
+
     sam_dict["orig_image"] = input_image
     sam_dict["pad_mask"] = None
+    if not keep_sam_masks:
+        sam_dict["sam_masks"] = None
 
-    if (sam_dict["mask_image"] is None or not isinstance(sam_dict["mask_image"], np.ndarray) or
-            sam_dict["mask_image"].shape != input_image.shape):
-        sam_dict["mask_image"] = np.zeros_like(input_image, dtype=np.uint8)
+    sam_dict["mask_image"] = np.zeros_like(input_image, dtype=np.uint8)
 
     ret_sel_image = cv2.addWeighted(input_image, 0.5, sam_dict["mask_image"], 0.5, 0)
 
-    if get_sketch_image(sam_image) is None:
-        sam_dict["sam_masks"] = None
-        ret_sam_image = np.zeros_like(input_image, dtype=np.uint8)
-    elif get_sketch_image(sam_image).shape == input_image.shape:
-        ret_sam_image = gr.update()
-    else:
-        sam_dict["sam_masks"] = None
-        ret_sam_image = gr.update(value=np.zeros_like(input_image, dtype=np.uint8))
-
-    if get_sketch_image(sel_mask) is None:
-        ret_sel_mask = ret_sel_image
-    elif sketch_image_matches(sel_mask, ret_sel_image):
-        ret_sel_mask = gr.update()
-    else:
-        ret_sel_mask = gr.update(value=ret_sel_image)
-
-    return ret_sam_image, ret_sel_mask, gr.update(interactive=True)
+    ret_sam_image = gr.update() if keep_sam_masks else np.zeros_like(input_image, dtype=np.uint8)
+    return ret_sam_image, ret_sel_image, gr.update(interactive=True)
 
 
 @clear_cache_decorator
@@ -1385,7 +1378,7 @@ def on_ui_tabs():
 
             load_model_btn.click(download_model, inputs=[sam_model_id], outputs=[status_text])
             input_upload_event = input_image.upload(
-                input_image_upload, inputs=[input_image, sam_image, sel_mask], outputs=[sam_image, sel_mask, sam_btn])
+                input_image_upload, inputs=[input_image, sam_image], outputs=[sam_image, sel_mask, sam_btn])
             if USE_FORGE_CANVAS:
                 input_upload_event.then(lambda: (None, None), outputs=[sam_sketch, sel_sketch])
             elif not GRADIO_V4_OR_LATER:
