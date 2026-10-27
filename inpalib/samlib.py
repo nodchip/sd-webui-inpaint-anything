@@ -235,7 +235,7 @@ def create_seg_color_image(
             canvas_image = canvas_image + seg_color
             progress_bar.update(1)
         seg_colormap = np.insert(seg_colormap, 0, [0, 0, 0], axis=0)
-        temp_canvas_image = np.apply_along_axis(lambda x: seg_colormap[x[0]], axis=-1, arr=canvas_image)
+        temp_canvas_image = seg_colormap[canvas_image[:, :, 0]]
         if len(sam_masks) > 255:
             canvas_image = canvas_image.astype(bool).astype(np.uint8)
             for idx, seg_dict in enumerate(sam_masks[255:min(509, len(sam_masks))]):
@@ -247,7 +247,7 @@ def create_seg_color_image(
             seg_colormap = seg_colormap[256:]
             seg_colormap = np.insert(seg_colormap, 0, [0, 0, 0], axis=0)
             seg_colormap = np.insert(seg_colormap, 0, [0, 0, 0], axis=0)
-            canvas_image = np.apply_along_axis(lambda x: seg_colormap[x[0]], axis=-1, arr=canvas_image)
+            canvas_image = seg_colormap[canvas_image[:, :, 0]]
             canvas_image = temp_canvas_image + canvas_image
         else:
             canvas_image = temp_canvas_image

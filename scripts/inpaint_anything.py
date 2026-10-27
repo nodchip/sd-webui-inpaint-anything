@@ -88,7 +88,7 @@ def download_model(sam_model_id):
         return "Model already exists"
 
 
-sam_dict = dict(sam_masks=None, mask_image=None, cnet=None, orig_image=None, pad_mask=None)
+sam_dict = dict(sam_masks=None, sam_color_image=None, mask_image=None, cnet=None, orig_image=None, pad_mask=None)
 GRADIO_V4_OR_LATER = int(gr.__version__.split(".", 1)[0]) >= 4
 USE_FORGE_CANVAS = GRADIO_V4_OR_LATER and ForgeCanvas is not None
 
@@ -161,6 +161,10 @@ def sketch_image_matches(sketch, image):
             np.all(sketch_image == image))
 
 
+def create_sam_preview(input_image, sam_color_image):
+    return cv2.addWeighted(input_image, 0.5, sam_color_image, 0.5, 0)
+
+
 def save_mask_image(mask_image, save_mask_chk=False):
     """Save mask image.
 
@@ -181,6 +185,7 @@ def save_mask_image(mask_image, save_mask_chk=False):
 def input_image_upload(input_image, sam_image):
     global sam_dict
 
+    previous_image = sam_dict["orig_image"]
     sam_preview = get_sketch_image(sam_image)
     keep_sam_masks = (sam_dict["sam_masks"] is not None and
                       isinstance(sam_preview, np.ndarray) and
@@ -192,12 +197,21 @@ def input_image_upload(input_image, sam_image):
     sam_dict["pad_mask"] = None
     if not keep_sam_masks:
         sam_dict["sam_masks"] = None
+        sam_dict["sam_color_image"] = None
 
     sam_dict["mask_image"] = np.zeros_like(input_image, dtype=np.uint8)
 
     ret_sel_image = cv2.addWeighted(input_image, 0.5, sam_dict["mask_image"], 0.5, 0)
 
-    ret_sam_image = gr.update() if keep_sam_masks else np.zeros_like(input_image, dtype=np.uint8)
+    if keep_sam_masks:
+        if isinstance(previous_image, np.ndarray) and np.array_equal(previous_image, input_image):
+            ret_sam_image = gr.update()
+        else:
+            if sam_dict["sam_color_image"] is None:
+                sam_dict["sam_color_image"] = inpalib.create_seg_color_image(input_image, sam_dict["sam_masks"])
+            ret_sam_image = create_sam_preview(input_image, sam_dict["sam_color_image"])
+    else:
+        ret_sam_image = np.zeros_like(input_image, dtype=np.uint8)
     return ret_sam_image, ret_sel_image, gr.update(interactive=True)
 
 
@@ -253,6 +267,7 @@ def run_sam(input_image, sam_model_id, sam_image, anime_style_chk=False):
     if sam_dict["sam_masks"] is not None:
         sam_dict["sam_masks"] = None
         gc.collect()
+    sam_dict["sam_color_image"] = None
 
     ia_logging.info(f"input_image: {input_image.shape} {input_image.dtype}")
 
@@ -261,9 +276,11 @@ def run_sam(input_image, sam_model_id, sam_image, anime_style_chk=False):
         sam_masks = inpalib.sort_masks_by_area(sam_masks)
         sam_masks = inpalib.insert_mask_to_sam_masks(sam_masks, sam_dict["pad_mask"])
 
-        seg_image = inpalib.create_seg_color_image(input_image, sam_masks)
+        sam_color_image = inpalib.create_seg_color_image(input_image, sam_masks)
+        seg_image = create_sam_preview(input_image, sam_color_image)
 
         sam_dict["sam_masks"] = sam_masks
+        sam_dict["sam_color_image"] = sam_color_image
 
     except Exception as e:
         print(traceback.format_exc())
@@ -1309,6 +1326,7 @@ def on_ui_tabs():
                     if USE_FORGE_CANVAS:
                         sam_canvas = ForgeCanvas(
                             no_upload=True, height=480, numpy=True, elem_id="ia_sam_image",
+                            preserve_view_on_resize=True,
                             scribble_color="#ffffff", scribble_color_fixed=True,
                             scribble_width=2, scribble_width_fixed=False,
                             scribble_alpha=100, scribble_alpha_fixed=True,
@@ -1377,11 +1395,11 @@ def on_ui_tabs():
                         sel_sketch = sel_mask
 
             load_model_btn.click(download_model, inputs=[sam_model_id], outputs=[status_text])
+            input_upload_kwargs = {"_js": "inpaintAnything_clearSelectionsOnUpload"} if USE_FORGE_CANVAS else {}
             input_upload_event = input_image.upload(
-                input_image_upload, inputs=[input_image, sam_image], outputs=[sam_image, sel_mask, sam_btn])
-            if USE_FORGE_CANVAS:
-                input_upload_event.then(lambda: (None, None), outputs=[sam_sketch, sel_sketch])
-            elif not GRADIO_V4_OR_LATER:
+                input_image_upload, inputs=[input_image, sam_image], outputs=[sam_image, sel_mask, sam_btn],
+                **input_upload_kwargs)
+            if not GRADIO_V4_OR_LATER:
                 input_upload_event.then(fn=None, inputs=None, outputs=None, _js="inpaintAnything_initSamSelMask")
             padding_btn.click(run_padding, inputs=[input_image, pad_scale_width, pad_scale_height, pad_lr_barance, pad_tb_barance, padding_mode],
                               outputs=[input_image, status_text])

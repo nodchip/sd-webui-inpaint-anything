@@ -363,6 +363,29 @@ function inpaintAnything_startSamProgress(inputImage, modelId, samImage, animeSt
     return [inputImage, modelId, samImage, animeStyle];
 }
 
+function inpaintAnything_clearSelectionsOnUpload(inputImage, samImage) {
+    const app = gradioApp();
+    for (const elemId of ["ia_sam_image", "ia_sel_mask"]) {
+        const container = app.querySelector(`#${elemId} .forge-container`);
+        const background = container?.querySelector(".forge-image");
+        if (container?.clientWidth && container.clientHeight && background?.naturalWidth) {
+            container.querySelector('[id^="centerButton_"]')?.click();
+        }
+
+        const canvas = app.querySelector(`#${elemId} .forge-drawing-canvas`);
+        if (!canvas) continue;
+
+        canvas.getContext("2d").clearRect(0, 0, canvas.width, canvas.height);
+        const uuid = canvas.id.replace("drawingCanvas_", "");
+        const foreground = app.querySelector(`#${uuid}.logical_image_foreground textarea`);
+        if (foreground) {
+            foreground.value = "";
+            foreground.dispatchEvent(new Event("input", { bubbles: true }));
+        }
+    }
+    return [inputImage, samImage];
+}
+
 function inpaintAnything_startCreateMaskProgress(inputImage, samSketch, invertMask, ignoreBlack, selectedMask) {
     inpaintAnything_setForgeCanvasProgress("ia_sel_mask", true, "Creating mask...");
     return [inputImage, samSketch, invertMask, ignoreBlack, selectedMask];
