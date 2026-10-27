@@ -1,7 +1,12 @@
 import gc
+import base64
+import json
 import math
 import os
 import platform
+import threading
+from functools import wraps
+from io import BytesIO
 
 if platform.system() == "Darwin":
     os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
@@ -31,6 +36,7 @@ from torch.hub import download_url_to_file
 from torchvision import transforms
 
 import inpalib
+from inpalib.mask_editor import MaskEditor
 from ia_check_versions import ia_check_versions
 from ia_config import (IAConfig, get_ia_config_index, get_webui_setting, set_ia_config,
                        setup_ia_config_ini)
@@ -88,9 +94,97 @@ def download_model(sam_model_id):
         return "Model already exists"
 
 
-sam_dict = dict(sam_masks=None, sam_color_image=None, sam_region_labels=None, mask_image=None, cnet=None, orig_image=None, pad_mask=None)
+sam_dict = dict(sam_masks=None, sam_color_image=None, sam_region_labels=None, mask_image=None,
+                mask_editor=None, editor_epoch=None, cnet=None, orig_image=None, pad_mask=None)
 GRADIO_V4_OR_LATER = int(gr.__version__.split(".", 1)[0]) >= 4
 USE_FORGE_CANVAS = GRADIO_V4_OR_LATER and ForgeCanvas is not None
+editor_lock = threading.RLock()
+
+
+def with_editor_lock(func):
+    @wraps(func)
+    def wrapped(*args, **kwargs):
+        with editor_lock:
+            return func(*args, **kwargs)
+    return wrapped
+
+
+def editor_png(image):
+    if image is None:
+        return None
+    buffer = BytesIO()
+    Image.fromarray(image).save(buffer, format="PNG")
+    return base64.b64encode(buffer.getvalue()).decode("ascii")
+
+
+def editor_epoch_is_obsolete(epoch):
+    current = sam_dict["editor_epoch"]
+    if not isinstance(epoch, str) or not isinstance(current, str):
+        return False
+    try:
+        client, generation = epoch.rsplit(":", 1)
+        current_client, current_generation = current.rsplit(":", 1)
+        return client == current_client and int(generation) <= int(current_generation)
+    except (ValueError, TypeError):
+        return False
+
+
+@with_editor_lock
+def editor_state(seq=None, include_colors=True):
+    editor = sam_dict["mask_editor"]
+    state = {"epoch": sam_dict["editor_epoch"], "seq": seq,
+             "mask": editor_png(editor.mask) if editor is not None else None,
+             "has_sam": sam_dict["sam_masks"] is not None}
+    if include_colors:
+        state["colors"] = editor_png(sam_dict["sam_color_image"])
+    return json.dumps(state)
+
+
+@with_editor_lock
+def editor_command(payload):
+    try:
+        command = json.loads(payload)
+        epoch, seq = command["epoch"], command["seq"]
+        if epoch != sam_dict["editor_epoch"] or sam_dict["mask_editor"] is None:
+            return json.dumps({"epoch": epoch, "seq": seq, "stale": True})
+        editor = sam_dict["mask_editor"]
+        action = command["action"]
+        if action == "select":
+            masks = sam_dict["sam_masks"]
+            if masks is None:
+                raise ValueError("Run Segment Anything first")
+            cached = sam_dict["sam_region_labels"]
+            labels = cached[1] if cached is not None and cached[0] is masks else None
+            if labels is None:
+                labels = inpalib.create_region_labels(masks, editor.mask.shape)
+                if labels is None:
+                    raise ValueError("Unsupported SAM region format")
+                sam_dict["sam_region_labels"] = (masks, labels)
+            editor.select(labels, command["points"], command["width"], command["ignore_black"])
+        elif action in ("add", "delete"):
+            editor.brush(command["points"], command["width"], action == "add")
+        elif action == "expand":
+            editor.expand(command["iterations"])
+        elif action == "invert":
+            editor.invert()
+        elif action == "clear":
+            editor.clear()
+        elif action == "undo":
+            editor.undo()
+        else:
+            raise ValueError("Unknown mask operation")
+        sam_dict["mask_image"] = editor.rgb_mask()
+        return editor_state(seq, include_colors=False)
+    except Exception as exc:
+        ia_logging.error(f"Mask editor: {exc}")
+        return json.dumps({"epoch": locals().get("epoch"), "seq": locals().get("seq"), "error": str(exc)})
+
+
+@with_editor_lock
+def editor_recover(epoch):
+    if not editor_epoch_is_obsolete(epoch):
+        sam_dict["editor_epoch"] = epoch
+    return editor_state()
 
 
 def get_sketch_image(sketch):
@@ -182,8 +276,12 @@ def save_mask_image(mask_image, save_mask_chk=False):
 
 
 @clear_cache_decorator
-def input_image_upload(input_image, sam_image):
+@with_editor_lock
+def input_image_upload(input_image, sam_image, editor_epoch=None):
     global sam_dict
+
+    if USE_FORGE_CANVAS and editor_epoch_is_obsolete(editor_epoch):
+        return gr.update(), gr.update(), gr.update(), gr.update()
 
     previous_image = sam_dict["orig_image"]
     sam_preview = get_sketch_image(sam_image)
@@ -194,6 +292,7 @@ def input_image_upload(input_image, sam_image):
                           for mask in sam_dict["sam_masks"]))
 
     sam_dict["orig_image"] = input_image
+    sam_dict["editor_epoch"] = editor_epoch
     sam_dict["pad_mask"] = None
     if not keep_sam_masks:
         sam_dict["sam_masks"] = None
@@ -201,10 +300,15 @@ def input_image_upload(input_image, sam_image):
         sam_dict["sam_region_labels"] = None
 
     sam_dict["mask_image"] = np.zeros_like(input_image, dtype=np.uint8)
+    sam_dict["mask_editor"] = MaskEditor(sam_dict["mask_image"])
 
-    ret_sel_image = cv2.addWeighted(input_image, 0.5, sam_dict["mask_image"], 0.5, 0)
+    ret_sel_image = True if USE_FORGE_CANVAS else cv2.addWeighted(input_image, 0.5, sam_dict["mask_image"], 0.5, 0)
 
-    if keep_sam_masks:
+    if USE_FORGE_CANVAS:
+        if keep_sam_masks and sam_dict["sam_color_image"] is None:
+            sam_dict["sam_color_image"] = inpalib.create_seg_color_image(input_image, sam_dict["sam_masks"])
+        ret_sam_image = input_image
+    elif keep_sam_masks:
         if isinstance(previous_image, np.ndarray) and np.array_equal(previous_image, input_image):
             ret_sam_image = gr.update()
         else:
@@ -213,15 +317,22 @@ def input_image_upload(input_image, sam_image):
             ret_sam_image = create_sam_preview(input_image, sam_dict["sam_color_image"])
     else:
         ret_sam_image = np.zeros_like(input_image, dtype=np.uint8)
+    if USE_FORGE_CANVAS:
+        return ret_sam_image, ret_sel_image, gr.update(interactive=True), ""
     return ret_sam_image, ret_sel_image, gr.update(interactive=True)
 
 
 @clear_cache_decorator
-def run_padding(input_image, pad_scale_width, pad_scale_height, pad_lr_barance, pad_tb_barance, padding_mode="edge"):
+@with_editor_lock
+def run_padding(input_image, pad_scale_width, pad_scale_height, pad_lr_barance, pad_tb_barance, padding_mode="edge", editor_epoch=None):
     global sam_dict
+    if USE_FORGE_CANVAS and editor_epoch_is_obsolete(editor_epoch):
+        return (gr.update(),) * 5
     if input_image is None or sam_dict["orig_image"] is None:
         sam_dict["orig_image"] = None
         sam_dict["pad_mask"] = None
+        if USE_FORGE_CANVAS:
+            return None, "Input image not found", gr.update(), gr.update(), gr.update()
         return None, "Input image not found"
 
     orig_image = sam_dict["orig_image"]
@@ -248,13 +359,27 @@ def run_padding(input_image, pad_scale_width, pad_scale_height, pad_lr_barance, 
     pad_mask = np.pad(pad_mask, pad_width=mask_pad_width, mode="constant", constant_values=255)
     sam_dict["pad_mask"] = dict(segmentation=pad_mask.astype(bool))
 
+    if USE_FORGE_CANVAS:
+        sam_dict["editor_epoch"] = editor_epoch
+        if sam_dict["sam_masks"] is not None and any(
+                mask["segmentation"].shape != pad_image.shape[:2] for mask in sam_dict["sam_masks"]):
+            sam_dict["sam_masks"] = None
+            sam_dict["sam_color_image"] = None
+            sam_dict["sam_region_labels"] = None
+        sam_dict["mask_image"] = np.zeros_like(pad_image, dtype=np.uint8)
+        sam_dict["mask_editor"] = MaskEditor(sam_dict["mask_image"])
+        return pad_image, "Padding done", pad_image, True, gr.update(interactive=True)
+
     return pad_image, "Padding done"
 
 
 @offload_reload_decorator
 @clear_cache_decorator
-def run_sam(input_image, sam_model_id, sam_image, anime_style_chk=False):
+@with_editor_lock
+def run_sam(input_image, sam_model_id, sam_image, anime_style_chk=False, editor_epoch=None):
     global sam_dict
+    if USE_FORGE_CANVAS and editor_epoch != sam_dict["editor_epoch"]:
+        return gr.update(), "Segment Anything cancelled: image changed"
     if not inpalib.sam_file_exists(sam_model_id):
         ret_sam_image = None if sam_image is None else gr.update()
         return ret_sam_image, f"{sam_model_id} not found, please download"
@@ -262,6 +387,9 @@ def run_sam(input_image, sam_model_id, sam_image, anime_style_chk=False):
     if input_image is None:
         ret_sam_image = None if sam_image is None else gr.update()
         return ret_sam_image, "Input image not found"
+
+    if sam_dict["mask_editor"] is not None:
+        sam_dict["mask_editor"].clear_history()
 
     set_ia_config(IAConfig.KEYS.SAM_MODEL_ID, sam_model_id, IAConfig.SECTIONS.USER)
 
@@ -279,7 +407,7 @@ def run_sam(input_image, sam_model_id, sam_image, anime_style_chk=False):
         sam_masks = inpalib.insert_mask_to_sam_masks(sam_masks, sam_dict["pad_mask"])
 
         sam_color_image = inpalib.create_seg_color_image(input_image, sam_masks)
-        seg_image = create_sam_preview(input_image, sam_color_image)
+        seg_image = None if USE_FORGE_CANVAS else create_sam_preview(input_image, sam_color_image)
 
         sam_dict["sam_masks"] = sam_masks
         sam_dict["sam_color_image"] = sam_color_image
@@ -290,6 +418,8 @@ def run_sam(input_image, sam_model_id, sam_image, anime_style_chk=False):
         ret_sam_image = None if sam_image is None else gr.update()
         return ret_sam_image, "Segment Anything failed"
 
+    if USE_FORGE_CANVAS:
+        return gr.update(), "Segment Anything complete"
     if get_sketch_image(sam_image) is None:
         return seg_image, "Segment Anything complete"
     else:
@@ -1359,32 +1489,44 @@ def on_ui_tabs():
                         sam_sketch = sam_image
 
                 with gr.Row():
-                    with gr.Column():
-                        select_btn = gr.Button("Create Mask", elem_id="select_btn", variant="primary")
-                    with gr.Column():
-                        with gr.Row():
-                            invert_chk = gr.Checkbox(label="Invert mask", elem_id="invert_chk", show_label=True, interactive=True)
-                            ignore_black_chk = gr.Checkbox(label="Ignore black area", elem_id="ignore_black_chk", value=True, show_label=True, interactive=True)
+                    if USE_FORGE_CANVAS:
+                        editor_mode = gr.Radio(["Region selection", "Add mask", "Remove mask"],
+                                               value="Region selection", label="Mode", elem_id="ia_editor_mode", interactive=True)
+                        ignore_black_chk = gr.Checkbox(label="Ignore black area", elem_id="ignore_black_chk", value=True, interactive=True)
+                        gr.HTML("", elem_id="ia_editor_status")
+                    else:
+                        with gr.Column():
+                            select_btn = gr.Button("Create Mask", elem_id="select_btn", variant="primary")
+                        with gr.Column():
+                            with gr.Row():
+                                invert_chk = gr.Checkbox(label="Invert mask", elem_id="invert_chk", show_label=True, interactive=True)
+                                ignore_black_chk = gr.Checkbox(label="Ignore black area", elem_id="ignore_black_chk", value=True, show_label=True, interactive=True)
 
                 with gr.Row():
                     with gr.Column():
                         expand_mask_btn = gr.Button("Expand mask region", elem_id="expand_mask_btn")
-                        expand_mask_iteration_count = gr.Slider(label="Expand Mask Iterations",
-                                                                elem_id="expand_mask_iteration_count", minimum=1, maximum=100, value=1, step=1)
+                        expand_mask_iteration_count = gr.Slider(label="Expand amount (pixels)" if USE_FORGE_CANVAS else "Expand Mask Iterations",
+                                                                elem_id="expand_mask_iteration_count", minimum=1, maximum=100, value=1, step=1, interactive=True)
                     with gr.Column():
-                        apply_mask_btn = gr.Button("Trim mask by sketch", elem_id="apply_mask_btn")
-                        add_mask_btn = gr.Button("Add mask by sketch", elem_id="add_mask_btn")
+                        if USE_FORGE_CANVAS:
+                            editor_invert_btn = gr.Button("Invert mask", elem_id="ia_editor_invert")
+                            editor_clear_btn = gr.Button("Clear mask", elem_id="ia_editor_clear")
+                            editor_undo_btn = gr.Button("Undo", elem_id="ia_editor_undo")
+                            editor_reload_btn = gr.Button("Reload mask", elem_id="ia_editor_reload")
+                        else:
+                            apply_mask_btn = gr.Button("Trim mask by sketch", elem_id="apply_mask_btn")
+                            add_mask_btn = gr.Button("Add mask by sketch", elem_id="add_mask_btn")
 
                 with gr.Row():
                     if USE_FORGE_CANVAS:
-                        sel_canvas = ForgeCanvas(
-                            no_upload=True, height=480, numpy=True, elem_id="ia_sel_mask",
-                            scribble_color="#ffffff", scribble_color_fixed=True,
-                            scribble_width=3, scribble_width_fixed=False,
-                            scribble_alpha=100, scribble_alpha_fixed=True,
-                            scribble_softness=0, scribble_softness_fixed=True)
-                        sel_mask = sel_canvas.background
-                        sel_sketch = sel_canvas.foreground
+                        sel_mask = gr.State()
+                        editor_epoch = gr.Textbox(value="", elem_id="ia_editor_epoch", elem_classes=["ia-editor-internal"])
+                        editor_request = gr.Textbox(elem_id="ia_editor_request", elem_classes=["ia-editor-internal"])
+                        upload_response = gr.Textbox(elem_classes=["ia-editor-internal"])
+                        sam_response = gr.Textbox(elem_classes=["ia-editor-internal"])
+                        command_response = gr.Textbox(elem_classes=["ia-editor-internal"])
+                        reload_response = gr.Textbox(elem_classes=["ia-editor-internal"])
+                        editor_submit = gr.Button("Apply editor operation", elem_id="ia_editor_submit", elem_classes=["ia-editor-internal"])
                     elif GRADIO_V4_OR_LATER:
                         sel_mask = gr.ImageMask(
                             label="Selected mask image", elem_id="ia_sel_mask", type="numpy",
@@ -1403,55 +1545,59 @@ def on_ui_tabs():
                         sel_sketch = sel_mask
 
             load_model_btn.click(download_model, inputs=[sam_model_id], outputs=[status_text])
+            editor_serial = {"concurrency_id": "ia-unified-editor", "concurrency_limit": 1} if USE_FORGE_CANVAS else {}
             input_upload_kwargs = {"_js": "inpaintAnything_clearSelectionsOnUpload"} if USE_FORGE_CANVAS else {}
+            upload_inputs = [input_image, sam_image, editor_epoch] if USE_FORGE_CANVAS else [input_image, sam_image]
+            upload_outputs = [sam_image, sel_mask, sam_btn, status_text] if USE_FORGE_CANVAS else [sam_image, sel_mask, sam_btn]
             input_upload_event = input_image.upload(
-                input_image_upload, inputs=[input_image, sam_image], outputs=[sam_image, sel_mask, sam_btn],
-                **input_upload_kwargs)
+                input_image_upload, inputs=upload_inputs, outputs=upload_outputs,
+                **input_upload_kwargs, **editor_serial)
+            if USE_FORGE_CANVAS:
+                sync = input_upload_event.then(editor_state, outputs=[upload_response], show_progress="hidden")
+                sync.then(fn=None, inputs=[upload_response], _js="inpaintAnything_receiveEditorState", show_progress="hidden")
+                command = editor_submit.click(editor_command, inputs=[editor_request], outputs=[command_response],
+                                              show_progress="hidden", **editor_serial)
+                command.then(fn=None, inputs=[command_response], _js="inpaintAnything_receiveEditorState", show_progress="hidden")
+                reload_event = editor_reload_btn.click(editor_recover, inputs=[editor_epoch], outputs=[reload_response],
+                                                       _js="inpaintAnything_startEditorRecovery", show_progress="hidden", **editor_serial)
+                reload_event.then(fn=None, inputs=[reload_response], _js="inpaintAnything_receiveEditorState", show_progress="hidden")
             if not GRADIO_V4_OR_LATER:
                 input_upload_event.then(fn=None, inputs=None, outputs=None, _js="inpaintAnything_initSamSelMask")
-            padding_btn.click(run_padding, inputs=[input_image, pad_scale_width, pad_scale_height, pad_lr_barance, pad_tb_barance, padding_mode],
-                              outputs=[input_image, status_text])
+            padding_inputs = [input_image, pad_scale_width, pad_scale_height, pad_lr_barance, pad_tb_barance, padding_mode]
+            if USE_FORGE_CANVAS:
+                padding_event = padding_btn.click(
+                    run_padding, inputs=[*padding_inputs, editor_epoch],
+                    outputs=[input_image, status_text, sam_image, sel_mask, sam_btn],
+                    _js="inpaintAnything_startEditorPadding", **editor_serial)
+                padding_sync = padding_event.then(editor_state, outputs=[upload_response], show_progress="hidden")
+                padding_sync.then(fn=None, inputs=[upload_response], _js="inpaintAnything_receiveEditorState", show_progress="hidden")
+            else:
+                padding_btn.click(run_padding, inputs=padding_inputs, outputs=[input_image, status_text])
             sam_progress_kwargs = {}
-            select_progress_kwargs = {}
-            expand_progress_kwargs = {}
-            apply_progress_kwargs = {}
-            add_progress_kwargs = {}
             if USE_FORGE_CANVAS:
                 sam_progress_kwargs = {"show_progress": "hidden", "_js": "inpaintAnything_startSamProgress"}
-                select_progress_kwargs = {"show_progress": "hidden", "_js": "inpaintAnything_startCreateMaskProgress"}
-                expand_progress_kwargs = {"show_progress": "hidden", "_js": "inpaintAnything_startExpandMaskProgress"}
-                apply_progress_kwargs = {"show_progress": "hidden", "_js": "inpaintAnything_startApplyMaskProgress"}
-                add_progress_kwargs = {"show_progress": "hidden", "_js": "inpaintAnything_startAddMaskProgress"}
-            sam_event = sam_btn.click(
-                run_sam, inputs=[input_image, sam_model_id, sam_image, anime_style_chk], outputs=[sam_image, status_text],
-                **sam_progress_kwargs)
-            select_event = select_btn.click(
-                select_mask, inputs=[input_image, sam_sketch, invert_chk, ignore_black_chk, sel_mask], outputs=[sel_mask],
-                **select_progress_kwargs)
-            expand_event = expand_mask_btn.click(
-                expand_mask, inputs=[input_image, sel_mask, expand_mask_iteration_count], outputs=[sel_mask],
-                **expand_progress_kwargs)
-            apply_event = apply_mask_btn.click(
-                apply_mask, inputs=[input_image, sel_sketch], outputs=[sel_mask], **apply_progress_kwargs)
-            add_event = add_mask_btn.click(
-                add_mask, inputs=[input_image, sel_sketch], outputs=[sel_mask], **add_progress_kwargs)
+            sam_inputs = [input_image, sam_model_id, sam_image, anime_style_chk]
             if USE_FORGE_CANVAS:
-                sam_event.then(
-                    lambda: None, outputs=[sam_sketch], show_progress="hidden", _js="inpaintAnything_finishSamProgress")
-                select_event.then(
-                    lambda: None, outputs=[sel_sketch], show_progress="hidden", _js="inpaintAnything_finishMaskProgress")
-                expand_event.then(
-                    lambda: None, outputs=[sel_sketch], show_progress="hidden", _js="inpaintAnything_finishMaskProgress")
-                apply_event.then(
-                    lambda: None, outputs=[sel_sketch], show_progress="hidden", _js="inpaintAnything_finishMaskProgress")
-                add_event.then(
-                    lambda: None, outputs=[sel_sketch], show_progress="hidden", _js="inpaintAnything_finishMaskProgress")
-            elif not GRADIO_V4_OR_LATER:
-                sam_event.then(fn=None, inputs=None, outputs=None, _js="inpaintAnything_clearSamMask")
-                select_event.then(fn=None, inputs=None, outputs=None, _js="inpaintAnything_clearSelMask")
-                expand_event.then(fn=None, inputs=None, outputs=None, _js="inpaintAnything_clearSelMask")
-                apply_event.then(fn=None, inputs=None, outputs=None, _js="inpaintAnything_clearSelMask")
-                add_event.then(fn=None, inputs=None, outputs=None, _js="inpaintAnything_clearSelMask")
+                sam_inputs.append(editor_epoch)
+            sam_event = sam_btn.click(
+                run_sam, inputs=sam_inputs, outputs=[sam_image, status_text],
+                **sam_progress_kwargs, **editor_serial)
+            if USE_FORGE_CANVAS:
+                sam_sync = sam_event.then(editor_state, outputs=[sam_response], show_progress="hidden")
+                sam_sync.then(fn=None, inputs=[sam_response], _js="inpaintAnything_finishEditorSam", show_progress="hidden")
+            else:
+                select_event = select_btn.click(
+                    select_mask, inputs=[input_image, sam_sketch, invert_chk, ignore_black_chk, sel_mask], outputs=[sel_mask])
+                expand_event = expand_mask_btn.click(
+                    expand_mask, inputs=[input_image, sel_mask, expand_mask_iteration_count], outputs=[sel_mask])
+                apply_event = apply_mask_btn.click(apply_mask, inputs=[input_image, sel_sketch], outputs=[sel_mask])
+                add_event = add_mask_btn.click(add_mask, inputs=[input_image, sel_sketch], outputs=[sel_mask])
+                if not GRADIO_V4_OR_LATER:
+                    sam_event.then(fn=None, inputs=None, outputs=None, _js="inpaintAnything_clearSamMask")
+                    select_event.then(fn=None, inputs=None, outputs=None, _js="inpaintAnything_clearSelMask")
+                    expand_event.then(fn=None, inputs=None, outputs=None, _js="inpaintAnything_clearSelMask")
+                    apply_event.then(fn=None, inputs=None, outputs=None, _js="inpaintAnything_clearSelMask")
+                    add_event.then(fn=None, inputs=None, outputs=None, _js="inpaintAnything_clearSelMask")
             get_txt2img_prompt_btn.click(
                 fn=None, inputs=None, outputs=None, _js="inpaintAnything_getTxt2imgPrompt")
             get_img2img_prompt_btn.click(
@@ -1461,19 +1607,23 @@ def on_ui_tabs():
                 run_inpaint,
                 inputs=[input_image, sel_mask, prompt, n_prompt, ddim_steps, cfg_scale, seed, inp_model_id, save_mask_chk, composite_chk,
                         sampler_name, iteration_count],
-                outputs=[out_image, iteration_count])
+                outputs=[out_image, iteration_count],
+                **({"_js": "(...args) => inpaintAnything_waitForEditor(12, ...args)"} if USE_FORGE_CANVAS else {}))
             cleaner_btn.click(
                 run_cleaner,
                 inputs=[input_image, sel_mask, cleaner_model_id, cleaner_save_mask_chk],
-                outputs=[cleaner_out_image])
+                outputs=[cleaner_out_image],
+                **({"_js": "(...args) => inpaintAnything_waitForEditor(4, ...args)"} if USE_FORGE_CANVAS else {}))
             get_alpha_image_btn.click(
                 run_get_alpha_image,
                 inputs=[input_image, sel_mask],
-                outputs=[alpha_out_image, get_alpha_status_text])
+                outputs=[alpha_out_image, get_alpha_status_text],
+                **({"_js": "(...args) => inpaintAnything_waitForEditor(2, ...args)"} if USE_FORGE_CANVAS else {}))
             get_mask_btn.click(
                 run_get_mask,
                 inputs=[sel_mask],
-                outputs=[mask_out_image])
+                outputs=[mask_out_image],
+                **({"_js": "(...args) => inpaintAnything_waitForEditor(1, ...args)"} if USE_FORGE_CANVAS else {}))
             mask_send_to_inpaint_btn.click(
                 fn=None,
                 _js="inpaintAnything_sendToInpaint",
@@ -1496,7 +1646,8 @@ def on_ui_tabs():
                 cn_inpaint_btn.click(
                     run_cn_inpaint,
                     inputs=cn_inputs,
-                    outputs=[cn_out_image, cn_iteration_count]).then(
+                    outputs=[cn_out_image, cn_iteration_count],
+                    **({"_js": f"(...args) => inpaintAnything_waitForEditor({len(cn_inputs)}, ...args)"} if USE_FORGE_CANVAS else {})).then(
                     fn=async_post_reload_model_weights, inputs=None, outputs=None)
             if webui_inpaint_enabled:
                 webui_get_txt2img_prompt_btn.click(
@@ -1512,7 +1663,8 @@ def on_ui_tabs():
                 webui_inpaint_btn.click(
                     run_webui_inpaint,
                     inputs=wi_inputs,
-                    outputs=[webui_out_image, webui_iteration_count]).then(
+                    outputs=[webui_out_image, webui_iteration_count],
+                    **({"_js": f"(...args) => inpaintAnything_waitForEditor({len(wi_inputs)}, ...args)"} if USE_FORGE_CANVAS else {})).then(
                     fn=async_post_reload_model_weights, inputs=None, outputs=None)
 
     return [(inpaint_anything_interface, "Inpaint Anything", "inpaint_anything")]

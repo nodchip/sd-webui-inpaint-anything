@@ -40,3 +40,7 @@
         animation-duration: 1.8s;
     }
 }
+
+.ia-editor-internal {
+    display: none !important;
+}

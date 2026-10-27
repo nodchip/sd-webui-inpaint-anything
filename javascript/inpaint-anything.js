@@ -358,12 +358,17 @@ function inpaintAnything_setForgeCanvasProgress(elemId, active, message = "") {
     container.setAttribute("aria-busy", nextPending > 0 ? "true" : "false");
 }
 
-function inpaintAnything_startSamProgress(inputImage, modelId, samImage, animeStyle) {
+async function inpaintAnything_startSamProgress(inputImage, modelId, samImage, animeStyle) {
+    if (window.inpaintAnythingEditor) {
+        await window.inpaintAnythingEditor.wait();
+        window.inpaintAnythingEditor.ready = false;
+    }
     inpaintAnything_setForgeCanvasProgress("ia_sam_image", true, "Running Segment Anything...");
-    return [inputImage, modelId, samImage, animeStyle];
+    return [inputImage, modelId, samImage, animeStyle, window.inpaintAnythingEditor.epoch];
 }
 
-function inpaintAnything_clearSelectionsOnUpload(inputImage, samImage) {
+function inpaintAnything_clearSelectionsOnUpload(inputImage, samImage, editorEpoch) {
+    if (window.inpaintAnythingEditor) editorEpoch = window.inpaintAnythingEditor.newImage();
     const app = gradioApp();
     for (const elemId of ["ia_sam_image", "ia_sel_mask"]) {
         const container = app.querySelector(`#${elemId} .forge-container`);
@@ -383,37 +388,7 @@ function inpaintAnything_clearSelectionsOnUpload(inputImage, samImage) {
             foreground.dispatchEvent(new Event("input", { bubbles: true }));
         }
     }
-    return [inputImage, samImage];
-}
-
-function inpaintAnything_startCreateMaskProgress(inputImage, samSketch, invertMask, ignoreBlack, selectedMask) {
-    inpaintAnything_setForgeCanvasProgress("ia_sel_mask", true, "Creating mask...");
-    return [inputImage, samSketch, invertMask, ignoreBlack, selectedMask];
-}
-
-function inpaintAnything_startExpandMaskProgress(inputImage, selectedMask, iterations) {
-    inpaintAnything_setForgeCanvasProgress("ia_sel_mask", true, "Expanding mask...");
-    return [inputImage, selectedMask, iterations];
-}
-
-function inpaintAnything_startApplyMaskProgress(inputImage, selectedSketch) {
-    inpaintAnything_setForgeCanvasProgress("ia_sel_mask", true, "Trimming mask...");
-    return [inputImage, selectedSketch];
-}
-
-function inpaintAnything_startAddMaskProgress(inputImage, selectedSketch) {
-    inpaintAnything_setForgeCanvasProgress("ia_sel_mask", true, "Adding mask...");
-    return [inputImage, selectedSketch];
-}
-
-function inpaintAnything_finishSamProgress() {
-    inpaintAnything_setForgeCanvasProgress("ia_sam_image", false);
-    return [];
-}
-
-function inpaintAnything_finishMaskProgress() {
-    inpaintAnything_setForgeCanvasProgress("ia_sel_mask", false);
-    return [];
+    return [inputImage, samImage, editorEpoch];
 }
 
 async function inpaintAnything_clearSamMask() {
@@ -849,7 +824,10 @@ onUiLoaded(async () => {
                 if (event.code !== defaultHotkeysConfig.canvas_hotkey_fullscreen || event.repeat || !root.matches(":hover")) {
                     return;
                 }
-                if (event.target.nodeName === "TEXTAREA" || event.target.nodeName === "INPUT") return;
+                const target = event.target;
+                const typing = target.nodeName === "TEXTAREA" || target.isContentEditable ||
+                    (target.nodeName === "INPUT" && !["radio", "checkbox", "range", "button"].includes(target.type));
+                if (typing) return;
 
                 event.preventDefault();
                 event.stopImmediatePropagation();
