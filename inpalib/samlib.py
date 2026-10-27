@@ -227,27 +227,24 @@ def create_seg_color_image(
     sam_masks = sam_masks[:len(seg_colormap)]
 
     with tqdm(total=len(sam_masks), desc="Processing segments") as progress_bar:
-        canvas_image = np.zeros((*input_image.shape[:2], 1), dtype=np.uint8)
+        canvas_image = np.zeros(input_image.shape[:2], dtype=np.uint8)
+        # Earlier masks take priority over later masks where they overlap.
         for idx, seg_dict in enumerate(sam_masks[0:min(255, len(sam_masks))]):
-            seg_mask = np.expand_dims(seg_dict["segmentation"].astype(np.uint8), axis=-1)
-            canvas_mask = np.logical_not(canvas_image.astype(bool)).astype(np.uint8)
-            seg_color = np.array([idx+1], dtype=np.uint8) * seg_mask * canvas_mask
-            canvas_image = canvas_image + seg_color
+            seg_mask = seg_dict["segmentation"].astype(np.uint8, copy=False)
+            np.multiply(seg_mask, np.uint8(idx + 1), out=canvas_image, where=canvas_image == 0)
             progress_bar.update(1)
         seg_colormap = np.insert(seg_colormap, 0, [0, 0, 0], axis=0)
-        temp_canvas_image = seg_colormap[canvas_image[:, :, 0]]
+        temp_canvas_image = seg_colormap[canvas_image]
         if len(sam_masks) > 255:
             canvas_image = canvas_image.astype(bool).astype(np.uint8)
             for idx, seg_dict in enumerate(sam_masks[255:min(509, len(sam_masks))]):
-                seg_mask = np.expand_dims(seg_dict["segmentation"].astype(np.uint8), axis=-1)
-                canvas_mask = np.logical_not(canvas_image.astype(bool)).astype(np.uint8)
-                seg_color = np.array([idx+2], dtype=np.uint8) * seg_mask * canvas_mask
-                canvas_image = canvas_image + seg_color
+                seg_mask = seg_dict["segmentation"].astype(np.uint8, copy=False)
+                np.multiply(seg_mask, np.uint8(idx + 2), out=canvas_image, where=canvas_image == 0)
                 progress_bar.update(1)
             seg_colormap = seg_colormap[256:]
             seg_colormap = np.insert(seg_colormap, 0, [0, 0, 0], axis=0)
             seg_colormap = np.insert(seg_colormap, 0, [0, 0, 0], axis=0)
-            canvas_image = seg_colormap[canvas_image[:, :, 0]]
+            canvas_image = seg_colormap[canvas_image]
             canvas_image = temp_canvas_image + canvas_image
         else:
             canvas_image = temp_canvas_image
