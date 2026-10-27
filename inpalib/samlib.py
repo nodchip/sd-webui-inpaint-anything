@@ -169,7 +169,13 @@ def sort_masks_by_area(
     Returns:
         List[Dict[str, Any]]: sorted SAM masks
     """
-    return sorted(sam_masks, key=lambda x: np.sum(x.get("segmentation").astype(np.uint32)))
+    def area(sam_mask):
+        segmentation = sam_mask.get("segmentation")
+        if segmentation.dtype == np.bool_:
+            return np.count_nonzero(segmentation)
+        return np.sum(segmentation.astype(np.uint32))
+
+    return sorted(sam_masks, key=area)
 
 
 def get_seg_colormap() -> np.ndarray:

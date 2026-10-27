@@ -66,10 +66,25 @@ def convert_mask(mask: Union[np.ndarray, Image.Image]) -> np.ndarray:
     return mask
 
 
+def create_region_labels(sam_masks: List[Dict[str, Any]], shape: tuple) -> Union[np.ndarray, None]:
+    """Map each pixel to the first matching binary SAM region, or zero for background."""
+    if len(sam_masks) >= np.iinfo(np.uint32).max:
+        return None
+    if any(not isinstance(m.get("segmentation"), np.ndarray) or
+           m["segmentation"].dtype != np.bool_ or m["segmentation"].shape != shape for m in sam_masks):
+        return None
+
+    labels = np.zeros(shape, dtype=np.uint32)
+    for index, sam_mask in enumerate(sam_masks, 1):
+        np.copyto(labels, index, where=sam_mask["segmentation"] & (labels == 0))
+    return labels
+
+
 def create_mask_image(
         mask: Union[np.ndarray, Image.Image],
         sam_masks: List[Dict[str, Any]],
         ignore_black_chk: bool = True,
+        region_labels: Union[np.ndarray, None] = None,
 ) -> np.ndarray:
     """Create mask image.
 
@@ -77,6 +92,7 @@ def create_mask_image(
         mask (Union[np.ndarray, Image.Image]): mask
         sam_masks (List[Dict[str, Any]]): SAM masks
         ignore_black_chk (bool): ignore black check
+        region_labels (np.ndarray, optional): Cached first-region labels for binary SAM masks.
 
     Returns:
         np.ndarray: mask image
@@ -84,20 +100,27 @@ def create_mask_image(
     check_inputs_create_mask_image(mask, sam_masks, ignore_black_chk)
     mask = convert_mask(mask)
 
+    if (region_labels is not None and region_labels.shape == mask.shape[:2] and
+            mask.dtype in (np.dtype(np.uint8), np.dtype(bool))):
+        selected = np.zeros(len(sam_masks) + 1, dtype=bool)
+        selected[region_labels[mask[:, :, 0].astype(bool)]] = True
+        if ignore_black_chk:
+            selected[0] = False
+        return np.repeat((selected[region_labels].astype(np.uint8) * 255)[:, :, np.newaxis], 3, axis=2)
+
     canvas_image = np.zeros(mask.shape, dtype=np.uint8)
     mask_region = np.zeros(mask.shape, dtype=np.uint8)
     for seg_dict in sam_masks:
-        seg_mask = np.expand_dims(seg_dict["segmentation"].astype(np.uint8), axis=-1)
-        canvas_mask = np.logical_not(canvas_image.astype(bool)).astype(np.uint8)
-        if (seg_mask * canvas_mask * mask).astype(bool).any():
-            mask_region = mask_region + (seg_mask * canvas_mask)
-        seg_color = seg_mask * canvas_mask
-        canvas_image = canvas_image + seg_color
+        seg_mask = np.expand_dims(seg_dict["segmentation"].astype(np.uint8, copy=False), axis=-1)
+        visible = seg_mask * (canvas_image == 0)
+        if (visible * mask).astype(bool).any():
+            np.add(mask_region, visible, out=mask_region)
+        np.add(canvas_image, visible, out=canvas_image)
 
     if not ignore_black_chk:
-        canvas_mask = np.logical_not(canvas_image.astype(bool)).astype(np.uint8)
+        canvas_mask = canvas_image == 0
         if (canvas_mask * mask).astype(bool).any():
-            mask_region = mask_region + (canvas_mask)
+            np.add(mask_region, canvas_mask, out=mask_region)
 
     mask_region = np.tile(mask_region * 255, (1, 1, 3))
 

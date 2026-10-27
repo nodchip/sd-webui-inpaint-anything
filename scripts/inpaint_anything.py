@@ -88,7 +88,7 @@ def download_model(sam_model_id):
         return "Model already exists"
 
 
-sam_dict = dict(sam_masks=None, sam_color_image=None, mask_image=None, cnet=None, orig_image=None, pad_mask=None)
+sam_dict = dict(sam_masks=None, sam_color_image=None, sam_region_labels=None, mask_image=None, cnet=None, orig_image=None, pad_mask=None)
 GRADIO_V4_OR_LATER = int(gr.__version__.split(".", 1)[0]) >= 4
 USE_FORGE_CANVAS = GRADIO_V4_OR_LATER and ForgeCanvas is not None
 
@@ -198,6 +198,7 @@ def input_image_upload(input_image, sam_image):
     if not keep_sam_masks:
         sam_dict["sam_masks"] = None
         sam_dict["sam_color_image"] = None
+        sam_dict["sam_region_labels"] = None
 
     sam_dict["mask_image"] = np.zeros_like(input_image, dtype=np.uint8)
 
@@ -268,6 +269,7 @@ def run_sam(input_image, sam_model_id, sam_image, anime_style_chk=False):
         sam_dict["sam_masks"] = None
         gc.collect()
     sam_dict["sam_color_image"] = None
+    sam_dict["sam_region_labels"] = None
 
     ia_logging.info(f"input_image: {input_image.shape} {input_image.dtype}")
 
@@ -312,7 +314,13 @@ def select_mask(input_image, sam_image, invert_chk, ignore_black_chk, sel_mask):
     mask = mask[:, :, 0:1]
 
     try:
-        seg_image = inpalib.create_mask_image(mask, sam_masks, ignore_black_chk)
+        cached_labels = sam_dict["sam_region_labels"]
+        region_labels = cached_labels[1] if cached_labels is not None and cached_labels[0] is sam_masks else None
+        if region_labels is None:
+            region_labels = inpalib.create_region_labels(sam_masks, mask.shape[:2])
+            if region_labels is not None and sam_dict["sam_masks"] is sam_masks:
+                sam_dict["sam_region_labels"] = (sam_masks, region_labels)
+        seg_image = inpalib.create_mask_image(mask, sam_masks, ignore_black_chk, region_labels)
         if invert_chk:
             seg_image = inpalib.invert_mask(seg_image)
 
