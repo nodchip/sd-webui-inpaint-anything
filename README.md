@@ -1,5 +1,32 @@
 # Inpaint Anything for Stable Diffusion Web UI
 
+## Forge Neo fork
+
+This fork adds a unified mask editor for [Stable Diffusion WebUI Forge Neo](https://github.com/Haoming02/sd-webui-forge-classic/tree/neo). Select SAM regions by clicking or dragging, and use **Add mask** and **Remove mask** to edit the same mask. The editor also supports undo, mask expansion, inversion, and clearing. The original project is [Uminosachi/sd-webui-inpaint-anything](https://github.com/Uminosachi/sd-webui-inpaint-anything).
+
+### Installation on Forge Neo
+
+1. Install this fork using the WebUI Extensions tab and the URL `https://github.com/nodchip/sd-webui-inpaint-anything.git`.
+2. Apply the included Forge Canvas patch from the Forge Neo repository root:
+
+   ```bash
+   git apply --check extensions/sd-webui-inpaint-anything/patches/forge-canvas.patch
+   git apply extensions/sd-webui-inpaint-anything/patches/forge-canvas.patch
+   ```
+
+3. Restart the WebUI and download a SAM model in the Inpaint Anything tab.
+
+The patch is required: this fork uses a Forge Canvas option that is not present in upstream Neo. It also fixes canvas pointer coordinates and single-click drawing, and changes zoom to Ctrl + mouse wheel. The patch is derived from Forge Neo and is provided under its [AGPL-3.0 license](patches/FORGE-LICENSE). The patch was checked for applicability to Neo commit `c6c2b43d03580160db7acb3c3bc22284a1e097e6`; if the check fails on your version or modified checkout, do not run the second command until the conflict is resolved. The unified editor and Cleaner were exercised on a locally modified Neo checkout; a complete GPU generation test on the upstream commit has not been performed.
+
+### Using the unified editor
+
+1. Upload an input image and run Segment Anything.
+2. In **Region selection** mode, click or drag over regions to toggle them. A partially selected region is filled first.
+3. Switch to **Add mask** or **Remove mask** to paint directly. The brush width is in the canvas toolbar.
+4. Use **Undo**, **Expand mask region**, **Invert mask**, or **Clear mask** as needed, then run Cleaner or an inpainting operation.
+
+Hover over the editor and press `S` for fullscreen, `R` to fit the image, or Ctrl + `Z` to undo. Use Ctrl + mouse wheel to zoom. The usage instructions below describe the original two-editor interface used in the non-Forge path; that path has not been revalidated for this fork.
+
 Inpaint Anything extension performs stable diffusion inpainting on a browser UI using any mask selected from the output of [Segment Anything](https://github.com/facebookresearch/segment-anything).
 
 
@@ -13,7 +40,7 @@ To install the software, please follow these steps:
 
 * Open the `Extensions` tab on the AUTOMATIC1111's [Stable Diffusion Web UI](https://github.com/AUTOMATIC1111/stable-diffusion-webui.git).
 * Select the `Install from URL` option.
-* Enter `https://github.com/Uminosachi/sd-webui-inpaint-anything.git` in the `URL for extension's git repository` field.
+* Enter `https://github.com/nodchip/sd-webui-inpaint-anything.git` in the `URL for extension's git repository` field.
 * Click on the `Install` button.
 * Once installation is complete, restart the Web UI.
 * Note: This extension supports v1.3.0 or higher of AUTOMATIC1111's Stable Diffusion Web UI.

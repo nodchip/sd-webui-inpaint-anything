@@ -1,0 +1,230 @@
+diff --git a/modules_forge/forge_canvas/canvas.css b/modules_forge/forge_canvas/canvas.css
+index 85659267..422d3989 100644
+--- a/modules_forge/forge_canvas/canvas.css
++++ b/modules_forge/forge_canvas/canvas.css
+@@ -142,7 +142,8 @@
+ }
+ 
+ .forge-scribble-indicator {
+-    position: relative;
++    position: absolute;
++    z-index: 9;
+     border-radius: 50%;
+     border: 1px solid;
+     pointer-events: none;
+diff --git a/modules_forge/forge_canvas/canvas.js b/modules_forge/forge_canvas/canvas.js
+index d5c97299..9849e239 100644
+--- a/modules_forge/forge_canvas/canvas.js
++++ b/modules_forge/forge_canvas/canvas.js
+@@ -48,6 +48,7 @@ class ForgeCanvas {
+         scribbleAlphaFixed = false,
+         scribbleSoftness = 0,
+         scribbleSoftnessFixed = false,
++        preserveViewOnResize = false,
+     ) {
+         this.gradio_config = gradio_config;
+         this.uuid = uuid;
+@@ -78,6 +79,7 @@ class ForgeCanvas {
+         this.scribbleAlphaFixed = scribbleAlphaFixed;
+         this.scribbleSoftness = scribbleSoftness;
+         this.scribbleSoftnessFixed = scribbleSoftnessFixed;
++        this.preserveViewOnResize = preserveViewOnResize;
+ 
+         this.history = [];
+         this.historyIndex = -1;
+@@ -188,7 +190,8 @@ class ForgeCanvas {
+             drawingCanvas.style.opacity = "0.5";
+         }
+ 
+-        function resetScribble(e, rect) {
++        function resetScribble(e) {
++            const rect = imageContainer.getBoundingClientRect();
+             const indicatorSize = self.scribbleWidth * (self.scribbleWidthConsistent ? 1.0 : self.imgScale) * 4;
+             scribbleIndicator.style.width = `${indicatorSize}px`;
+             scribbleIndicator.style.height = `${indicatorSize}px`;
+@@ -205,7 +208,7 @@ class ForgeCanvas {
+         }
+ 
+         const resizeObserver = new ResizeObserver(() => {
+-            self.adjustInitialPositionAndScale();
++            if (!self.preserveViewOnResize || !self.img) self.adjustInitialPositionAndScale();
+             self.drawImage();
+         });
+         resizeObserver.observe(container);
+@@ -268,11 +271,10 @@ class ForgeCanvas {
+             if (!self.img || e.button !== 0 || self.no_scribbles) return;
+             e.preventDefault();
+             drawingCanvas.setPointerCapture(e.pointerId);
+-            const rect = drawingCanvas.getBoundingClientRect();
+             self.drawing = true;
+             drawingCanvas.style.cursor = "crosshair";
+             scribbleIndicator.style.display = "none";
+-            self.temp_draw_points = [[(e.clientX - rect.left) / self.imgScale, (e.clientY - rect.top) / self.imgScale]];
++            self.temp_draw_points = [self.eventToCanvasPoint(e)];
+             self.temp_draw_bg = drawContext.getImageData(0, 0, drawingCanvas.width, drawingCanvas.height);
+             self.handleDraw(e);
+         });
+@@ -280,8 +282,7 @@ class ForgeCanvas {
+         drawingCanvas.addEventListener("pointermove", (e) => {
+             if (self.drawing) self.handleDraw(e);
+             if (self.img && !self.drawing && !self.dragging && !self.no_scribbles) {
+-                const rect = container.getBoundingClientRect();
+-                resetScribble(e, rect);
++                resetScribble(e);
+                 scribbleIndicator.style.display = "inline-block";
+             }
+         });
+@@ -344,6 +345,10 @@ class ForgeCanvas {
+ 
+         container.addEventListener("wheel", (e) => {
+             if (!self.img) return;
++
++            const adjustingBrush = this._held_W || this._held_A || this._held_S;
++            if (!adjustingBrush && !e.ctrlKey) return;
++
+             e.preventDefault();
+             const delta = e.deltaY * -0.001;
+             let scale = true;
+@@ -352,8 +357,7 @@ class ForgeCanvas {
+                 // Width
+                 scribbleWidth.value = parseInt(scribbleWidth.value) - Math.sign(e.deltaY) * 3;
+                 updateInput(scribbleWidth);
+-                const rect = container.getBoundingClientRect();
+-                resetScribble(e, rect);
++                resetScribble(e);
+                 scale = false;
+             }
+             if (this._held_A) {
+@@ -381,8 +385,8 @@ class ForgeCanvas {
+             self.imgX = x - (x - self.imgX) * newScale;
+             self.imgY = y - (y - self.imgY) * newScale;
+             self.drawImage();
+-            resetScribble(e, rect);
+-        });
++            resetScribble(e);
++        }, { passive: false });
+ 
+         container.addEventListener("contextmenu", (e) => {
+             e.preventDefault();
+@@ -510,12 +514,18 @@ class ForgeCanvas {
+         });
+     }
+ 
++    eventToCanvasPoint(e) {
++        const canvas = this.drawingCanvas_;
++        const rect = canvas.getBoundingClientRect();
++        const scaleX = rect.width > 0 ? canvas.width / rect.width : 1.0;
++        const scaleY = rect.height > 0 ? canvas.height / rect.height : 1.0;
++        return [(e.clientX - rect.left) * scaleX, (e.clientY - rect.top) * scaleY];
++    }
++
+     handleDraw(e) {
+         const canvas = this.drawingCanvas_;
+         const ctx = canvas.getContext("2d");
+-        const rect = canvas.getBoundingClientRect();
+-        const x = (e.clientX - rect.left) / this.imgScale;
+-        const y = (e.clientY - rect.top) / this.imgScale;
++        const [x, y] = this.eventToCanvasPoint(e);
+ 
+         this.temp_draw_points.push([x, y]);
+         ctx.putImageData(this.temp_draw_bg, 0, 0);
+@@ -530,10 +540,24 @@ class ForgeCanvas {
+         ctx.lineJoin = "round";
+         ctx.lineWidth = (this.scribbleWidth / (this.scribbleWidthConsistent ? this.imgScale : 1.0)) * 4;
+ 
++        // A click produces only coincident points; stroke() need not paint that path.
++        const [startX, startY] = this.temp_draw_points[0];
++        const isDot = this.temp_draw_points.every(([px, py]) => px === startX && py === startY);
++        const paintStroke = () => {
++            if (isDot) {
++                ctx.beginPath();
++                ctx.arc(startX, startY, ctx.lineWidth / 2, 0, 2 * Math.PI);
++                ctx.fillStyle = ctx.strokeStyle;
++                ctx.fill();
++            } else {
++                ctx.stroke();
++            }
++        };
++
+         if (this.scribbleAlpha <= 0) {
+             ctx.globalCompositeOperation = "destination-out";
+             ctx.globalAlpha = 1.0;
+-            ctx.stroke();
++            paintStroke();
+             return;
+         }
+ 
+@@ -541,7 +565,7 @@ class ForgeCanvas {
+ 
+         if (this.contrast_scribbles) {
+             ctx.strokeStyle = this.contrast_pattern;
+-            ctx.stroke();
++            paintStroke();
+             return;
+         }
+ 
+@@ -559,12 +583,12 @@ class ForgeCanvas {
+             ctx.save();
+             ctx.globalCompositeOperation = "destination-out";
+             ctx.globalAlpha = 1.0;
+-            ctx.stroke();
++            paintStroke();
+             ctx.restore();
+ 
+             ctx.globalCompositeOperation = "source-over";
+             ctx.globalAlpha = drawingAlpha / 100.0;
+-            ctx.stroke();
++            paintStroke();
+             return;
+         }
+ 
+@@ -577,7 +601,7 @@ class ForgeCanvas {
+ 
+         for (let i = 0; i < steps; i++) {
+             ctx.lineWidth = innerWidth + stepWidth * i;
+-            ctx.stroke();
++            paintStroke();
+         }
+     }
+ 
+@@ -825,6 +849,10 @@ class ForgeCanvas {
+         maxButton.style.display = "none";
+         minButton.style.display = "inline-block";
+         this.maximized = true;
++        if (this.preserveViewOnResize && this.img) {
++            this.adjustInitialPositionAndScale();
++            this.drawImage();
++        }
+     }
+ 
+     minimize() {
+@@ -842,6 +870,10 @@ class ForgeCanvas {
+         maxButton.style.display = "inline-block";
+         minButton.style.display = "none";
+         this.maximized = false;
++        if (this.preserveViewOnResize && this.img) {
++            this.adjustInitialPositionAndScale();
++            this.drawImage();
++        }
+     }
+ 
+     handleDragEnd(e, isPointerOut) {
+diff --git a/modules_forge/forge_canvas/canvas.py b/modules_forge/forge_canvas/canvas.py
+index 43cb23b3..b55f66c2 100644
+--- a/modules_forge/forge_canvas/canvas.py
++++ b/modules_forge/forge_canvas/canvas.py
+@@ -122,7 +122,7 @@ class LogicalImage(gr.Textbox):
+ 
+ 
+ class ForgeCanvas:
+-    def __init__(self, no_upload=False, no_scribbles=False, contrast_scribbles=False, height=None, scribble_color="#000000", scribble_color_fixed=False, scribble_width=25, scribble_width_fixed=False, scribble_alpha=100, scribble_alpha_fixed=False, scribble_softness=0, scribble_softness_fixed=False, visible=True, numpy=False, initial_image=None, elem_id=None, elem_classes=None):
++    def __init__(self, no_upload=False, no_scribbles=False, contrast_scribbles=False, height=None, scribble_color="#000000", scribble_color_fixed=False, scribble_width=25, scribble_width_fixed=False, scribble_alpha=100, scribble_alpha_fixed=False, scribble_softness=0, scribble_softness_fixed=False, visible=True, numpy=False, initial_image=None, elem_id=None, elem_classes=None, preserve_view_on_resize=False):
+         self.uuid = "uuid_" + uuid.uuid4().hex
+ 
+         canvas_html_uuid = canvas_html.replace("forge_mixin", self.uuid)
+@@ -135,4 +135,4 @@ class ForgeCanvas:
+         self.block = gr.HTML(canvas_html_uuid, visible=visible, elem_id=elem_id, elem_classes=elem_classes)
+         self.foreground = LogicalImage(visible=DEBUG_MODE, label="foreground", numpy=numpy, elem_id=self.uuid, elem_classes=["logical_image_foreground"])
+         self.background = LogicalImage(visible=DEBUG_MODE, label="background", numpy=numpy, value=initial_image, elem_id=self.uuid, elem_classes=["logical_image_background"])
+-        Context.root_block.load(None, js=f'async ()=>{{new ForgeCanvas("{self.uuid}", {no_upload}, {no_scribbles}, {contrast_scribbles}, {height or opts.forge_canvas_height}, ' f"'{scribble_color}', {scribble_color_fixed}, {scribble_width}, {scribble_width_fixed}, {opts.forge_canvas_consistent_brush}, " f"{scribble_alpha}, {scribble_alpha_fixed}, {scribble_softness}, {scribble_softness_fixed});}}")
++        Context.root_block.load(None, js=f'async ()=>{{new ForgeCanvas("{self.uuid}", {no_upload}, {no_scribbles}, {contrast_scribbles}, {height or opts.forge_canvas_height}, ' f"'{scribble_color}', {scribble_color_fixed}, {scribble_width}, {scribble_width_fixed}, {opts.forge_canvas_consistent_brush}, " f"{scribble_alpha}, {scribble_alpha_fixed}, {scribble_softness}, {scribble_softness_fixed}, {preserve_view_on_resize});}}")
